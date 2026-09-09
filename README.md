@@ -4,7 +4,7 @@
 
 # Barometer for Windows
 
-**Weather and system statistics, on the taskbar.**
+**Weather and system statistics, in the system tray.**
 
 ![Platform](https://img.shields.io/badge/windows%2011-4fd8f5?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPL--3.0-4fd8f5?style=flat-square)
@@ -13,8 +13,8 @@
 </div>
 
 A companion to [Barometer for macOS](https://github.com/mackid1993/Barometer),
-which lives in the menu bar. This one lives in the Windows 11 taskbar and shows
-the same things: network throughput, processor and memory load, graphics load,
+which lives in the menu bar. This one lives in the Windows 11 system tray and
+shows the same things: network throughput, processor and memory load, graphics load,
 disk throughput, temperatures, and the weather.
 
 The two are separate programs rather than one program built twice - that one is
@@ -25,16 +25,47 @@ releases here on GitHub, and each updates itself from its own.
 ## What it looks like
 
 The readout is transparent. There is no plate and no container: the numbers sit
-directly on the taskbar, and the weather is the temperature with its condition
-drawn in the space above and below it.
+directly in the notification area, and the weather is the temperature with its
+condition drawn in the space above and below it.
 
 It claims room by registering transparent placeholder icons in the notification
 area, which makes Windows repack the task buttons aside. That is the only way
-to get space on a Windows 11 taskbar without drawing over somebody's window
-button. If another program's icon is dragged into that space the readout hides
+to get space in a Windows 11 system tray without drawing over somebody's
+window button. If another program's icon is dragged into that space the readout hides
 itself rather than covering it, and comes back when the icon leaves.
 
+## What it shows
+
+Seven modules. Each can be on the strip or off it, in whatever order you drag
+them into, and each opens a panel when clicked.
+
+| Module | On the strip | In its panel |
+| --- | --- | --- |
+| **Processor** | Total load, or the user and system split | Per-core bars, a timeline, load average, uptime, and the busiest processes with an end-task button |
+| **Graphics** | Utilization of the busiest engine | Per-engine load, memory in use, clock, power and temperature, with an adapter picker for machines with more than one |
+| **Memory** | Used, free, or the percentage | A breakdown of what the memory is doing, commit charge, page file, and the hungriest processes |
+| **Disks** | Read and write rates, for every disk together or one you choose | Every physical disk with its model and rates, and the space used on a volume you choose |
+| **Network** | Upload and download rates, either order | Per-interface and per-process throughput, addresses, and your public address if you want it |
+| **Sensors** | Any one temperature, fan or voltage you pick | Everything the source reports, grouped by device, with a timeline each |
+| **Weather** | Temperature with its condition drawn around it | Now, the next forty-eight hours, ten days, air quality, sunrise and moon |
+
+Any of those readings can also go into a **stack**: several values in one
+column, which is how you fit more on without making the strip longer.
+
 ## Requirements
+
+| | |
+| --- | --- |
+| **Windows 11** | x64. Windows 10 is refused by the installer - see below |
+| **Taskbar on top or bottom** | A side-docked taskbar is refused with a message |
+| **Administrator** | Required. The installer registers a sign-in task so this is silent |
+| **A .NET runtime** | Not needed. The sensor helper carries its own |
+| **[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)** | Optional, for temperatures, fans and voltages. Barometer can fetch it for you, into your own AppData, and ships none of it |
+| **[PawnIO](https://pawnio.eu)** | Optional, for processor package and core temperatures. Somebody else's signed driver, installed by you |
+| **Internet** | Only for what asks: the weather, your approximate location if you want it, and update checks |
+
+Everything optional above is genuinely optional: anything unavailable reads as
+unavailable rather than as a wrong number.
 
 **Windows 11.** Not a preference. The mechanism above is specific to the
 Windows 11 taskbar, and on Windows 10 Barometer would install and draw nothing;
@@ -86,9 +117,15 @@ reads as unavailable rather than as a wrong number.
 cargo build --release
 ```
 
-That is the whole story for the readout: a Rust toolchain, nothing else. The
-sensor helper needs a .NET 8 SDK and is a separate program on purpose, so this
-one does not inherit that.
+That is the whole story for the readout: a Rust toolchain, nothing else. Two
+crates and `serde_json`, which is there because the sensor source and the
+GitHub release feed are both somebody else's JSON; everything that talks to
+Windows is `windows-sys`.
+
+The sensor helper needs a .NET 10 SDK, and is a separate program on purpose so
+this one does not inherit that. .NET 10 is not a preference either:
+LibreHardwareMonitor publishes a .NET Framework 4.7.2 build and a .NET 10 build
+and nothing between them, and only the matching pair loads.
 
 To build everything and package an installer:
 
@@ -102,10 +139,10 @@ ship a binary carrying the path it was built on.
 
 Two things worth knowing while working on it:
 
-- `barometer.exe --strip` draws on the taskbar. Without it you get a console
+- `barometer.exe --strip` draws in the system tray. Without it you get a console
   readout of the same numbers, which is easier to watch.
 - `barometer.exe --marks sheet.bmp` lays out all fourteen weather marks at three
-  times life size. They are too small to judge one at a time on a live taskbar,
+  times life size. They are too small to judge one at a time in a live tray,
   at whatever the weather happens to be doing.
 
 ## License
