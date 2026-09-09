@@ -236,7 +236,7 @@ pub fn declare_dpi_aware() {
     }
 }
 
-/// The taskbar's own window, which the strip becomes a child of.
+/// The taskbar's own window, which the strip is owned by.
 pub fn taskbar_window() -> HWND {
     // SAFETY: a class name lookup with no window name.
     unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null()) }
@@ -409,8 +409,40 @@ pub struct Strip {
     placed: std::cell::Cell<(i32, i32, i32, i32)>,
 }
 
+impl Drop for Strip {
+    /// Takes the window down with the struct.
+    ///
+    /// Without this the readout outlived every Explorer restart. The strip is
+    /// a popup *owned* by Shell_TrayWnd rather than a child of it - a real
+    /// child is composited under the Win11 taskbar's XAML surface and never
+    /// seen - and Windows only destroys an owner's owned windows when they
+    /// belong to the same thread. Ours does not, so the dying shell disowned
+    /// it and left it running: a second readout, topmost, layered, holding
+    /// its last bitmap forever, sitting where the old taskbar used to be and
+    /// swallowing clicks meant for whatever the new one put there.
+    ///
+    /// WM_DESTROY is also the only place the WinEvent hooks are unhooked and
+    /// the STRIP handle cleared, so leaking the window leaked three hooks per
+    /// restart as well.
+    fn drop(&mut self) {
+        if self.hwnd.is_null() {
+            return;
+        }
+        // SAFETY: a window this type created, destroyed once - the handle is
+        // not used again because the struct is going away with it.
+        unsafe { DestroyWindow(self.hwnd) };
+    }
+}
+
 impl Strip {
-    /// Creates the strip as a child of the taskbar.
+    /// A strip with no window, for the moment between destroying one and
+    /// creating the next. Every method on it is a no-op because every method
+    /// checks the handle, and `Drop` leaves it alone.
+    pub fn placeholder() -> Strip {
+        Strip { hwnd: std::ptr::null_mut(), placed: std::cell::Cell::new((0, 0, 0, 0)) }
+    }
+
+    /// Creates the strip as a popup owned by the taskbar.
     ///
     /// Returns None when the taskbar cannot be found, which happens while
     /// Explorer is restarting. That is transient: the caller retries rather
@@ -466,7 +498,9 @@ impl Strip {
         // same operation, so there is no frame in which the taskbar is on top.
         // The hook stays as the backstop for whatever else restacks us.
         //
-        // The owner dying takes the strip with it, which is what already
+        // The owner dying does NOT take the strip with it - owner and owned are
+    // on different threads here, so the shell disowns rather than destroys it;
+    // see `impl Drop for Strip`, which is what already
         // happens when Explorer restarts; the caller rebuilds it.
         //
         // WS_EX_TOOLWINDOW keeps it out of Alt-Tab; WS_EX_NOACTIVATE keeps a

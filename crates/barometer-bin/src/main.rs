@@ -1057,9 +1057,10 @@ The file it could not read has been kept, at:
             }
 
             // Explorer restarting takes the whole shell with it: the tray has
-            // forgotten every placeholder, and the strip - a child of the old
-            // Shell_TrayWnd - died with its parent. Both are rebuilt here,
-            // outside the broadcast, against a shell that has finished starting.
+            // forgotten every placeholder, and the strip is owned by a
+            // Shell_TrayWnd that no longer exists. Both are rebuilt here,
+            // outside the broadcast, against a shell that has finished
+            // starting.
             if tray::take_shell_restarted() {
                 if let Some(reservation) = reservation.as_mut() {
                     reservation.on_shell_restarted();
@@ -1069,13 +1070,21 @@ The file it could not read has been kept, at:
                 // behind it, which is not the failure the deadline is for.
                 hold_deadline = None;
                 flyout.close();
+                // The old window goes first, and the order is not a
+                // preference. WM_DESTROY unhooks whatever hook handles are in
+                // the statics and clears STRIP; destroying the old strip after
+                // creating the new one would tear down the new one's hooks and
+                // forget its handle. Dropping it here runs that teardown while
+                // the statics still describe the window being destroyed.
+                drop(std::mem::replace(&mut strip, window::Strip::placeholder()));
                 match window::Strip::create() {
                     Some(fresh) => {
                         strip = fresh;
                         strip.forget_placement();
                     }
-                    // The new taskbar is not up yet. Leave the old handle in
-                    // place, do nothing this tick, and try again on the next.
+                    // The new taskbar is not up yet. Nothing is on screen now,
+                    // which is correct - there is no taskbar to sit on - and
+                    // the next tick tries again.
                     None => continue,
                 }
             }
@@ -1421,7 +1430,14 @@ The file it could not read has been kept, at:
                 }
             }
 
-            let Some(bar) = taskbar::taskbar() else { continue };
+            let Some(bar) = taskbar::taskbar() else {
+                // No taskbar to sit on - Explorer is down, or between the
+                // shell dying and the new one announcing itself. The readout
+                // used to stay where it was and paint over an empty desktop
+                // until the shell came back.
+                strip.set_visible(false);
+                continue;
+            };
             if !bar.edge.is_supported() {
                 // The same dialog the startup path puts up, for the same
                 // reason: this is a windows-subsystem binary with no

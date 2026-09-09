@@ -13,7 +13,7 @@ use windows_sys::Win32::Graphics::Dwm::{
 };
 use windows_sys::Win32::Graphics::Gdi::{
     EnumFontFamiliesExW, GetDC, GetMonitorInfoW, MonitorFromPoint, ReleaseDC, DEFAULT_CHARSET,
-    LOGFONTW, MONITORINFO, RASTER_FONTTYPE, TEXTMETRICW,
+    LOGFONTW, MONITORINFO, TEXTMETRICW,
 };
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -109,13 +109,18 @@ unsafe extern "system" fn collect_family(
     1
 }
 
-/// Which enumerated families are worth drawing a readout with.
+/// Every family the machine has.
 ///
-/// Vertical variants (the `@` families), bitmap fonts and the icon fonts are
-/// dropped: none of them is something a person means when they ask for a
-/// font, and the icon ones would draw the readout as a row of boxes. GDI
-/// reports a family once per style, so repeats are collapsed. Sorted without
-/// regard to case so "Segoe UI" and "segoe script" sit together.
+/// Nothing is filtered. There used to be a list here - icon fonts, bitmap
+/// fonts, the `@` families Windows uses for vertical writing - dropped on the
+/// grounds that nobody means Wingdings when they ask for a font. Some of that
+/// was even true, and none of it was ours to decide: a blocklist written
+/// against the fonts on one machine is wrong about every other machine, and
+/// somebody who picks an icon font gets a row of little pictures, learns
+/// something, and picks again.
+///
+/// GDI reports a family once per style, so repeats are collapsed. Sorted
+/// without regard to case so "Segoe UI" and "segoe script" sit together.
 pub fn family_names(found: Vec<(String, u32)>) -> Vec<String> {
     let mut families: Vec<String> = found
         .into_iter()
@@ -127,18 +132,24 @@ pub fn family_names(found: Vec<(String, u32)>) -> Vec<String> {
     families
 }
 
-/// The families the picker offers: `family_names` with the weight and style
-/// instances folded into their parents.
+/// The families the picker offers: every family the machine has.
 ///
-/// GDI registers every named instance of a variable font, and every weight
-/// of an ordinary one that ships as its own file, as a family: "Segoe UI
-/// Variable Small Light", "Segoe UI Semibold", "Arial Black". Offering those
-/// beside a Weight control asks the same question twice in two vocabularies,
-/// and the names are long precisely because they carry the answer to the
-/// other control's question - that is what was overrunning the dropdown.
-/// The font cache turns a family and a weight back into the instance.
+/// These used to be folded into their parents - "Segoe UI Semibold" shown as
+/// "Segoe UI", with the Weight control meant to put the Semibold back. The
+/// reasoning was that offering both asks the same question twice in two
+/// vocabularies. It is a fair argument and it was the wrong call: a named
+/// instance is a real family with faces somebody drew, and folding it away
+/// meant the one face a person actually wanted could not be chosen by name.
+/// "Segoe UI Semibold" is what a Windows font dialog lists, it is what
+/// TrafficMonitor writes into its INI, and it is a different thing from
+/// Segoe UI asked to be bolder.
+///
+/// So the list is what is installed, and the Weight control stays for the
+/// families that carry their weights as styles rather than as separate
+/// names. Choosing an instance family and leaving the weight alone asks for
+/// exactly the face - see `instance_family` and the FW_NORMAL it implies.
 pub fn families_for_picker(names: &[String]) -> Vec<String> {
-    let mut families: Vec<String> = names.iter().map(|name| fold_family(name, names)).collect();
+    let mut families: Vec<String> = names.to_vec();
     families.sort_by_key(|name| name.to_lowercase());
     families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     families
@@ -186,22 +197,8 @@ const STYLE_WORDS: [&str; 16] = [
     "Semicondensed",
 ];
 
-fn keep_family(name: &str, kind: u32) -> bool {
-    if name.starts_with('@') || name.is_empty() || kind & RASTER_FONTTYPE != 0 {
-        return false;
-    }
-    const ICON_FONTS: [&str; 8] = [
-        "Segoe Fluent Icons",
-        "Segoe MDL2 Assets",
-        "HoloLens MDL2 Assets",
-        "Segoe UI Emoji",
-        "Segoe UI Symbol",
-        "Marlett",
-        "Symbol",
-        "Wingdings",
-    ];
-    !ICON_FONTS.iter().any(|icon| name.eq_ignore_ascii_case(icon)) && !name.starts_with("Wingdings")
-        && !name.starts_with("Webdings")
+fn keep_family(name: &str, _kind: u32) -> bool {
+    !name.is_empty()
 }
 
 /// Dresses the window frame to match the theme.
@@ -375,61 +372,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_picker_drops_what_nobody_means_by_a_font() {
+    fn the_picker_keeps_every_font_the_machine_has() {
+        // Nothing is dropped. A blocklist written against the fonts on one
+        // machine is wrong about every other machine, and which of these is
+        // a sensible readout face is the user's judgement, not this list's.
+        // Only the repeats GDI reports - one per style - are collapsed, and
+        // only case distinguishes them.
         let found = vec![
             ("Segoe UI".to_string(), 4),
             ("@Segoe UI".to_string(), 4),
-            ("Terminal".to_string(), RASTER_FONTTYPE),
+            ("Terminal".to_string(), 1),
             ("Segoe Fluent Icons".to_string(), 4),
             ("Wingdings 2".to_string(), 4),
             ("Cascadia Mono".to_string(), 4),
             ("segoe ui".to_string(), 4),
             ("Arial".to_string(), 4),
         ];
-        assert_eq!(family_names(found), vec!["Arial", "Cascadia Mono", "Segoe UI"]);
+        assert_eq!(
+            family_names(found),
+            vec![
+                "@Segoe UI",
+                "Arial",
+                "Cascadia Mono",
+                "Segoe Fluent Icons",
+                "Segoe UI",
+                "Terminal",
+                "Wingdings 2",
+            ]
+        );
     }
 
-    /// The picker offers families; the weights GDI lists as families of
-    /// their own fold into their parents, truncated names included, and an
-    /// optical size that is not a weight stays.
+    /// A named instance is a real family with faces somebody drew, and the
+    /// picker offers it by name. It used to fold them into their parents -
+    /// "Segoe UI Semibold" shown as "Segoe UI" with a Weight control meant
+    /// to put the Semibold back - which meant the one face a person wanted
+    /// could not be asked for by name.
     #[test]
-    fn the_picker_folds_weight_instances_into_their_families() {
+    fn the_picker_offers_the_instance_families_by_their_own_names() {
         let names: Vec<String> = [
             "Arial",
             "Arial Black",
             "Bahnschrift",
             "Bahnschrift SemiBold",
-            "Bahnschrift SemiBold Condensed",
             "Segoe UI",
             "Segoe UI Semibold",
-            "Segoe UI Historic",
             "Segoe UI Variable Display",
             "Segoe UI Variable Display Semib",
-            "Segoe UI Variable Small",
-            "Segoe UI Variable Small Semibol",
-            "Segoe UI Variable Small Semilig",
-            "Segoe UI Variable Text",
-            "Segoe UI Variable Text Light",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
-        assert_eq!(
-            families_for_picker(&names),
-            vec![
-                "Arial",
-                "Bahnschrift",
-                "Segoe UI",
-                "Segoe UI Historic",
-                "Segoe UI Variable Display",
-                "Segoe UI Variable Small",
-                "Segoe UI Variable Text",
-            ]
-        );
-        // A saved instance name still finds its family in the folded list.
-        let folded = families_for_picker(&names);
-        assert_eq!(fold_family("Segoe UI Variable Small Semibol", &folded), "Segoe UI Variable Small");
-        assert_eq!(fold_family("Nonexistent Bold", &folded), "Nonexistent Bold");
+        let offered = families_for_picker(&names);
+        // Every one of them, the parents among them.
+        assert_eq!(offered.len(), names.len());
+        for wanted in ["Segoe UI", "Segoe UI Semibold", "Arial Black", "Bahnschrift SemiBold"] {
+            assert!(offered.iter().any(|f| f == wanted), "{wanted} is missing from {offered:?}");
+        }
+        // Sorted without regard to case, and the truncated instance name
+        // Windows actually registers is kept as it is.
+        assert!(offered.iter().any(|f| f == "Segoe UI Variable Display Semib"));
+        assert!(offered.windows(2).all(|p| p[0].to_lowercase() <= p[1].to_lowercase()));
     }
 
     #[test]

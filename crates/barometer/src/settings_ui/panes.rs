@@ -1126,7 +1126,10 @@ pub fn dropdown_items(view: &View, id: Id) -> (Vec<String>, usize) {
             // A settings file may name an instance - "Segoe UI Variable Small
             // Semibol" from before the picker offered families - and that
             // still has to find its family in the list.
-            let current = system::fold_family(&model.settings.font.family, view.families);
+            // The saved name as it stands: the list carries the real
+            // families now, instance names among them, so there is nothing
+            // to fold it into.
+            let current = model.settings.font.family.clone();
             let mut items: Vec<String> = view.families.to_vec();
             let selected = match items.iter().position(|f| *f == current) {
                 Some(index) => index,
@@ -1546,7 +1549,7 @@ pub struct ChoiceContext {
 
 impl ChoiceContext {
     pub fn capture(view: &View) -> ChoiceContext {
-        let current = system::fold_family(&view.model.settings.font.family, view.families);
+        let current = view.model.settings.font.family.clone();
         ChoiceContext {
             selection: view.selection,
             families: view.families.to_vec(),
