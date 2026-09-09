@@ -61,7 +61,7 @@ column, which is how you fit more on without making the strip longer.
 | **Administrator** | Required. The installer registers a sign-in task so this is silent |
 | **A .NET runtime** | Not needed. The sensor helper carries its own |
 | **[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)** | Optional, for temperatures, fans and voltages. Barometer can fetch it for you, into your own AppData, and ships none of it |
-| **[PawnIO](https://pawnio.eu)** | Optional, for processor package and core temperatures. Somebody else's signed driver, installed by you |
+| **[PawnIO](https://pawnio.eu)** | Optional, for the processor's temperatures and the motherboard's fans, voltages and board temperatures. Graphics and drive temperatures arrive without it. Somebody else's signed driver, installed by you |
 | **Internet** | Only for what asks: the weather, your approximate location if you want it, and update checks |
 
 Everything optional above is genuinely optional: anything unavailable reads as
@@ -80,11 +80,14 @@ message rather than run: widening the notification area frees no horizontal
 space there, so the readout has nowhere to go. The small 26H2 taskbar is fine -
 the strip measures the bar and sizes itself to whatever it finds.
 
-**Barometer runs as administrator.** Package and core temperatures live in
-model-specific registers, and reading one is a ring-0 operation. Measured on
-the machine this was written on, same binary, same driver, elevation the only
-difference: unelevated, 144 sensors and every one of the 38 temperatures
-unreadable; elevated, 196 sensors and all 43 readable, including 35 CPU cores.
+**Barometer runs as administrator.** Most hardware sensors are behind
+instructions and ports that user mode may not touch - the processor's
+temperatures in model-specific registers, the motherboard's fans, voltages and
+board temperatures behind the SuperIO chip, the embedded controller or the
+SMBus - and reading any of them is a ring-0 operation. Measured on the machine
+this was written on, same binary, same driver, elevation the only difference:
+unelevated, 144 sensors and every one of the 38 temperatures unreadable;
+elevated, 196 sensors and all 43 readable, including 35 CPU cores.
 There is no unprivileged path to the number. The installer registers a
 scheduled task so sign-in is silent; only a manual launch prompts.
 
@@ -94,10 +97,20 @@ Windows publishes no API for temperature, fan or voltage sensors.
 does the reading; you install it and Barometer loads it from wherever you put
 it. Nothing of it is in our binary, and you update it on your own schedule.
 
-**Some sensors additionally need PawnIO.** [PawnIO](https://pawnio.eu) is a
-small third-party signed kernel driver. You install it yourself, from its own
-site. Barometer contains no kernel driver of its own and never will; see
-[NOTICE.md](NOTICE.md).
+**Most sensors additionally need PawnIO.** [PawnIO](https://pawnio.eu) is a
+small third-party signed kernel driver, and it is what actually does the
+privileged reading: LibreHardwareMonitor carries a PawnIO module for each way
+into the hardware - `IntelMSR`, `AMDFamily17` and `RyzenSMU` for the
+processor, `LpcIO` for the SuperIO chip's fans and voltages, `LpcACPIEC` and
+`IsaBridgeEC` for embedded controllers, `SmbusI801` and friends for memory
+module temperatures - and runs them inside the driver.
+
+So this is not only about the processor. What arrives without PawnIO is what
+has a path of its own: the graphics card, which vendor libraries report, and
+the drives, which answer SMART and NVMe queries directly.
+
+You install it yourself, from its own site. Barometer contains no kernel
+driver of its own and never will; see [NOTICE.md](NOTICE.md).
 
 Barometer tells those apart rather than reporting one vague "sensors do not
 work": PawnIO absent, or PawnIO present but closed to an unelevated process.

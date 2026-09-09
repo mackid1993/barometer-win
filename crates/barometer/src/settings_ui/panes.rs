@@ -719,20 +719,24 @@ fn sensors_sections(b: &mut Builder, view: &View) {
     );
     match view.pawnio {
         pawnio::Status::Ready => {
-            b.row_status(Ink::Success, "PawnIO is installed", Some("Processor temperatures are available."));
+            b.row_status(
+                Ink::Success,
+                "PawnIO is installed",
+                Some("Processor, motherboard and memory sensors are available."),
+            );
         }
         pawnio::Status::NeedsElevation => {
             b.row_status(
                 Ink::Caution,
                 "PawnIO is installed but closed to this process",
-                Some("Run Barometer as administrator for processor temperatures. Graphics temperatures arrive either way."),
+                Some("Run Barometer as administrator for the processor, motherboard and memory sensors. Graphics and drive temperatures arrive either way."),
             );
         }
         pawnio::Status::NotInstalled => {
             b.row_status(
                 Ink::Tertiary,
                 "PawnIO is not installed",
-                Some("Optional. Graphics temperatures arrive without it; processor temperatures need this signed driver, which you install yourself."),
+                Some("Optional. Graphics and drive temperatures arrive without it; the processor's temperatures and the motherboard's fans, voltages and board temperatures need this signed driver, which you install yourself."),
             );
             b.row_buttons(
                 None,

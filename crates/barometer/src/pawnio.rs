@@ -6,12 +6,24 @@
 // PawnIO: whether it is there, whether we may use it, and what to say when the
 // answer is no.
 //
-// Processor package and core temperatures live in model-specific registers,
-// which user mode cannot read. PawnIO is the signed kernel driver that reads
-// them on the sensor stack's behalf. Barometer ships no driver and installs no
-// driver - see AGENTS.md, "Antivirus and code signing" - so PawnIO is
-// something a person installs themselves, and all this module does is notice
-// what they have and say so once.
+// Most of a computer's hardware sensors are behind instructions and ports
+// that user mode may not touch: the processor's own temperatures live in
+// model-specific registers, and the motherboard's fans, voltages and board
+// temperatures live behind the SuperIO chip, the embedded controller or the
+// SMBus. PawnIO is the signed kernel driver that reads all of those on the
+// sensor stack's behalf - LibreHardwareMonitor carries a module for each
+// (IntelMSR, AMDFamily17, RyzenSMU, LpcIO, LpcACPIEC, IsaBridgeEC, SmbusI801
+// and the rest) and runs them inside it.
+//
+// So this is not only about the processor, which is what an earlier version
+// of every string in this file said. What arrives without PawnIO is what has
+// a path of its own: the graphics card, which vendor libraries report, and
+// the drives, which answer SMART and NVMe queries directly.
+//
+// Barometer ships no driver and installs no driver - see AGENTS.md,
+// "Antivirus and code signing" - so PawnIO is something a person installs
+// themselves, and all this module does is notice what they have and say so
+// once.
 //
 // The important thing here is that this is *two* questions with two different
 // remedies, and collapsing them into one "temperatures do not work" is the
@@ -255,17 +267,18 @@ pub fn prompt_if_needed(sensors_enabled: bool) {
     }
 }
 
-const TITLE: &str = "Barometer - processor temperature";
+const TITLE: &str = "Barometer - hardware sensors";
 
 const INSTALL_MESSAGE: &str = concat!(
-    "Barometer cannot read this computer's processor temperature.\n\n",
-    "Processors report their temperature through model-specific registers, ",
-    "which Windows does not let ordinary programs read. Reaching them needs ",
-    "PawnIO - a small kernel driver, written and signed by namazso, that ",
-    "exists to do exactly this - and PawnIO is not installed here.\n\n",
-    "This is optional. Everything else works without it: graphics card ",
-    "temperatures, which are usually most of what people came for, arrive ",
-    "either way, and the processor readings simply show as unavailable.\n\n",
+    "Barometer cannot read most of this computer's hardware sensors.\n\n",
+    "The processor's temperatures, and the motherboard's fan speeds, ",
+    "voltages and board temperatures, are read through instructions and ",
+    "ports that Windows does not let ordinary programs use. Reaching them ",
+    "needs PawnIO - a small kernel driver, written and signed by namazso, ",
+    "that exists to do exactly this - and PawnIO is not installed here.\n\n",
+    "This is optional. What has a path of its own arrives either way: ",
+    "graphics card temperatures and drive temperatures are unaffected, and ",
+    "everything else simply shows as unavailable.\n\n",
     "PawnIO is somebody else's software, with its own installer and its own ",
     "license. Barometer contains no kernel driver, installs none, and will ",
     "not install this one for you. If you want it, you install it yourself.\n\n",
@@ -283,7 +296,7 @@ const INSTALL_MESSAGE: &str = concat!(
 /// Saying nothing in that case would leave somebody with blank temperatures
 /// and no explanation, which is the failure this whole module is against.
 const ELEVATION_MESSAGE: &str = concat!(
-    "Barometer cannot read this computer's processor temperature.\n\n",
+    "Barometer cannot read most of this computer's hardware sensors.\n\n",
     "PawnIO is installed here and its driver is running, so there is nothing ",
     "to install. Windows refused Barometer access to it: PawnIO admits only ",
     "the system account and administrators, and this copy of Barometer is not ",
@@ -292,8 +305,8 @@ const ELEVATION_MESSAGE: &str = concat!(
     "is not supposed to happen. Closing it and starting it again from its ",
     "Start menu shortcut, allowing the prompt Windows shows, is the thing to ",
     "try.\n\n",
-    "Everything else, graphics card temperatures included, works exactly as ",
-    "it does now.\n\n",
+    "What has a path of its own - graphics card and drive temperatures - ",
+    "works exactly as it does now.\n\n",
     "Barometer says this once."
 );
 

@@ -75,9 +75,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "startup"; Description: "Start {#AppName} when I sign in"; GroupDescription: "Startup:"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
-; Processor temperatures live in model-specific registers that no ordinary
-; program may read. PawnIO is the third-party signed driver that reads them,
-; and it is somebody else's software with its own installer and license.
+; Most hardware sensors are behind instructions and ports no ordinary program
+; may use: the processor's temperatures in model-specific registers, and the
+; motherboard's fans, voltages and board temperatures behind the SuperIO chip,
+; the embedded controller or the SMBus. PawnIO is the third-party signed driver
+; that reads all of them, and it is somebody else's software with its own
+; installer and license.
 ;
 ; unchecked, deliberately, and it is the one task here that would be wrong to
 ; tick by default. Barometer installs no driver and must not look like it is
@@ -89,11 +92,15 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; want it, not the only chance they get to hear about it.
 ;
 ; The wording says what it is *for*. "Optional download" on its own tells the
-; user nothing they can decide with - optional in aid of what? Naming the thing
-; they lose by skipping it, CPU temperature, is the entire content of the
-; sentence, and "optional" belongs on the group heading where it describes the
-; whole section rather than standing in for a reason.
-Name: "pawnio"; Description: "Open the PawnIO download page - needed for CPU temperature readings"; GroupDescription: "Processor temperature (optional):"; Flags: unchecked
+; user nothing they can decide with - optional in aid of what? Naming what they
+; lose by skipping it is the entire content of the sentence, and "optional"
+; belongs on the group heading where it describes the whole section rather than
+; standing in for a reason.
+;
+; What they lose is not only the processor's temperature, which is what this
+; line used to say. It is nearly every hardware sensor except the graphics card
+; and the drives, both of which have a path of their own.
+Name: "pawnio"; Description: "Open the PawnIO download page - needed for processor, fan and voltage sensors"; GroupDescription: "Hardware sensors (optional):"; Flags: unchecked
 
 [Files]
 Source: "{#StageDir}\{#AppExeName}";  DestDir: "{app}"; Flags: ignoreversion
