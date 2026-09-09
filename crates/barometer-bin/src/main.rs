@@ -852,9 +852,6 @@ The file it could not read has been kept, at:
     // pull the next sample forward rather than leaving the graph blank for
     // the rest of the second.
     let mut panels_were_open = false;
-    // What each column has been lately, so the strip reserves the width it
-    // has needed rather than the width it could ever need.
-    let mut widths = settings_ui::preview::ColumnWidths::default();
     let mut disks_snapshot = disks::DisksSnapshot::default();
     let mut network_snapshot = network::NetworkSnapshot::default();
     let mut sensors_snapshot = sensor_panel::SensorsSnapshot::default();
@@ -1502,22 +1499,14 @@ The file it could not read has been kept, at:
             }
             column_items.clear();
             let mut columns: Vec<window::Column> = Vec::new();
-            // A column is remembered by its place, so a strip that has gained
-            // or lost one has to start again: index three is not the column
-            // index three used to be, and inheriting its width would hold
-            // space for a reading that has moved or gone.
-            widths.match_count(cells.iter().map(|cell| cell.columns.len()).sum());
-            let mut at = 0usize;
             for cell in &cells {
                 let owner = cell.item;
                 for column in &cell.columns {
                     column_items.push(owner);
-                    let reserved = widths.reserve(at, column, Instant::now());
-                    at += 1;
                     columns.push(window::Column {
                         top: column.top.clone(),
                         bottom: column.bottom.clone(),
-                        reserved,
+                        reserved: column.reserved.clone(),
                         badge: column.badge,
                         heading: column.label_top,
                         top_label: column.top_label.clone(),
@@ -1542,8 +1531,6 @@ The file it could not read has been kept, at:
                 if let Some(changed) = open.take_changes() {
                     settings = changed.to_settings();
                     model = settings_ui::Model::from_settings(settings.clone());
-                    // The columns are not the same columns any more.
-                    widths.forget();
                     font = settings.font.clone();
                     apply_to_modules(&mut modules, &settings);
                     save_settings(store.as_mut(), &settings);
