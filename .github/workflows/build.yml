@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# Barometer - a system monitor for the Windows taskbar
+# Copyright (c) 2026 David Brustein
+#
+# Builds an installer on demand. Manual only: there is no push or pull_request
+# trigger, deliberately. A release is a thing somebody decides to cut, and a
+# workflow that fires on every commit spends runner minutes proving what the
+# local build already proved.
+#
+# The version typed in is written into Cargo.toml and the installer script by
+# version.ps1, exactly the way scripts\build.ps1 does it locally, and then
+# thrown away with the runner. Nothing is committed and nothing is tagged:
+# this produces a setup file to test, and cutting the release stays a separate
+# decision made with the artifact in hand.
+
+name: Build installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the build with, e.g. 1.0.10"
+        required: true
+        type: string
+      publish:
+        description: "Also create a draft release with the installer attached"
+        required: false
+        default: false
+        type: boolean
+      notes:
+        description: "Release notes. Ignored unless publish is on."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # Write, only because the optional draft-release step at the end needs it.
+    # Permissions cannot be made conditional on an input, so the narrower
+    # read above is the default for anything else added to this file later.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships a current stable toolchain, so this is a
+      # no-op most days. It is here so a build is never held back by whatever
+      # rustc the image happened to freeze on.
+      - name: Update Rust
+        run: rustup update stable --no-self-update
+
+      # The sensor helper is a .NET 10 program, and .NET 10 is not a
+      # preference: LibreHardwareMonitor publishes a .NET Framework 4.7.2
+      # build and a .NET 10 build and nothing between them, and only the
+      # matching pair loads. See helper\BarometerSensorsHelper.csproj.
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # actions/cache rather than a Rust-specific action: this is one job with
+      # one profile, the paths are not a mystery, and it is one less
+      # third-party action in the chain that produces a shipped artifact. The
+      # lockfile keys it, so a dependency change gets a fresh cache and
+      # everything else reuses one.
+      - name: Cache cargo and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Check the version is a version
+        shell: pwsh
+        run: |
+          $v = '${{ inputs.version }}'.Trim()
+          if ($v -notmatch '^\d+\.\d+\.\d+$') {
+            throw "version '$v' is not major.minor.patch"
+          }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Writes it to Cargo.toml and installer\barometer.iss, the one place it
+      # is defined and the one place it is duplicated. Checked rather than
+      # assumed: version.ps1 replaces by regular expression, and a silent miss
+      # would build the old version under the new name, which is the one kind
+      # of wrong build that looks exactly like a right one.
+      - name: Stamp the version
+        shell: pwsh
+        run: |
+          ./version.ps1 $env:VERSION
+
+          $cargo = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1
+          $iss = Select-String -Path installer\barometer.iss -Pattern '#define AppVersion\s+"([^"]+)"' |
+            Select-Object -First 1
+
+          $inCargo = $cargo.Matches[0].Groups[1].Value
+          $inIss = $iss.Matches[0].Groups[1].Value
+
+          Write-Host "Cargo.toml:    $inCargo"
+          Write-Host "barometer.iss: $inIss"
+
+          if ($inCargo -ne $env:VERSION) { throw "Cargo.toml says $inCargo, not $env:VERSION" }
+          if ($inIss -ne $env:VERSION) { throw "barometer.iss says $inIss, not $env:VERSION" }
+
+      # The debug profile on purpose. scripts\build.ps1 owns the release
+      # build, and it sets CARGO_ENCODED_RUSTFLAGS itself to remap the source
+      # paths out of the binary; testing in release here would compile the
+      # world once without those flags and then again with them, because
+      # changing RUSTFLAGS invalidates the cache. The tests do not care which
+      # profile they run in, and this way the cache the release build reuses
+      # is the one the release build made.
+      - name: Test
+        shell: pwsh
+        run: cargo test --workspace
+
+      # Inno Setup ships on the windows runner images, but build.ps1 only
+      # warns and skips the installer when it cannot find it - which locally
+      # is the right thing and here would mean a green build with nothing in
+      # it. So it is looked for first, in the two Program Files directories
+      # and then anywhere on PATH, and installed if the image has dropped it.
+      # A runner image is not a contract, and the alternative is a workflow
+      # that starts failing on a Tuesday for reasons unrelated to the code.
+      - name: Make sure Inno Setup is present
+        shell: pwsh
+        run: |
+          function Find-Iscc {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+              "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+            )
+
+            foreach ($c in $candidates) {
+              if (Test-Path $c) { return $c }
+            }
+
+            $onPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($onPath) { return $onPath.Source }
+
+            return $null
+          }
+
+          if (-not (Find-Iscc)) {
+            Write-Host "Inno Setup is not on this image; installing it."
+            choco install innosetup --no-progress -y
+          }
+
+          $iscc = Find-Iscc
+          if (-not $iscc) { throw "Inno Setup 6 was not found and could not be installed" }
+          Write-Host "Using $iscc"
+
+      # The same script that builds it locally, so the two cannot drift: it
+      # builds the workspace, publishes the sensor helper, stages everything
+      # the installer expects, refuses any binary still carrying a local path,
+      # and runs ISCC over the result.
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      # Where cargo put it. The target directory is asked for rather than
+      # assumed, because build.ps1 asks too - see its comment about the
+      # redirected target directory.
+      - name: Find the installer
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $targetDir = $metadata.target_directory -replace '/', '\'
+          $setup = Join-Path $targetDir "dist\Barometer-Setup-$env:VERSION.exe"
+
+          if (-not (Test-Path $setup)) {
+            throw "the build reported success but $setup is not there"
+          }
+
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          Write-Host "$setup"
+          Write-Host "SHA-256 $hash"
+          "SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Barometer-Setup-${{ env.VERSION }}
+          path: ${{ env.SETUP }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # Off unless asked for, and a draft even then, so the artifact above is
+      # the normal outcome and publishing stays a thing somebody clicks.
+      #
+      # Tagged plain `v1.2.3`. This repository holds one program: the macOS
+      # app has its own, and the `windows-v` prefix that used to keep the two
+      # apart is gone with the repository that needed it.
+      - name: Draft a release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Through the environment, not spliced into the script below. Notes
+          # are prose typed by a person: a quote or a backtick in them would
+          # end the string and run the rest as PowerShell.
+          NOTES: ${{ inputs.notes }}
+        shell: pwsh
+        run: |
+          $notes = $env:NOTES
+
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = "Built from $env:GITHUB_SHA."
+          }
+
+          # A file rather than an argument, so newlines survive.
+          $notes | Out-File -FilePath notes.md -Encoding utf8
+
+          gh release create "v$env:VERSION" `
+            "$env:SETUP" `
+            --draft `
+            --title "Barometer $env:VERSION" `
+            --notes-file notes.md

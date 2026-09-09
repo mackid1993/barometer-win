@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/barometer-core", "crates/barometer", "crates/barometer-bin"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.10"
+edition = "2021"
+license = "GPL-3.0-only"
+authors = ["David Brustein <david@brustein.net>"]
+repository = "https://github.com/mackid1993/Barometer"
+rust-version = "1.75"
+
+[workspace.dependencies]
+windows-sys = "0.59"
+
+[profile.release]
+# Size, not speed. The work this does per tick is a handful of syscalls and
+# some formatting; nothing here is throughput bound, and the binary sitting
+# resident all day is the number that matters.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1

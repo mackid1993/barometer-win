@@ -1,0 +1,95 @@
+[package]
+name = "barometer-app"
+description = "The taskbar readout, its window, and the tray reservation behind it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "barometer_app"
+path = "src/lib.rs"
+
+[dependencies]
+barometer-core = { path = "../barometer-core" }
+# The GitHub release feed. Already in the tree through barometer-core, and the
+# same reasoning applies: a hand-written parser for somebody else's JSON works
+# until the day it does not.
+serde_json = "1"
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    # The window itself, its class, its message loop, and finding the taskbar
+    # to attach to.
+    "Win32_UI_WindowsAndMessaging",
+    # GDI rather than Direct2D for the readout. It is a few dozen glyphs on a
+    # strip that repaints only when a displayed value changes; a D2D device,
+    # its swap chain and the DXGI machinery behind them would cost more memory
+    # at rest than the entire rest of this program. Revisit if the readout ever
+    # grows graphs that animate.
+    "Win32_Graphics_Gdi",
+    # Per-monitor DPI. Declaring awareness is not optional here: without it
+    # Windows virtualizes every coordinate, and the strip measured a 48 pixel
+    # taskbar as 32 on a 150% display and drew itself to match.
+    "Win32_UI_HiDpi",
+    # MsgWaitForMultipleObjects, so the sampling interval waits on messages
+    # rather than sleeping through them. A strip that ignores input for a
+    # second at a time feels broken even when it is drawing correctly.
+    "Win32_System_Threading",
+    # Shell_NotifyIconW, for the transparent placeholder icons that claim the
+    # space. This is the mechanism the whole strip stands on.
+    "Win32_UI_Shell",
+    # Placeholders must be marked always-visible under NotifyIconSettings or
+    # they hide in the overflow flyout and reserve nothing at all.
+    "Win32_System_Registry",
+    # GDI+ for the weather marks, and nothing else. They are two and three
+    # pixel features - a 1.8 pixel cloud bar, a 1.6 pixel crescent - and GDI
+    # has no antialiasing to give them; drawn aliased they read as damage
+    # rather than as weather.
+    "Win32_Graphics_GdiPlus",
+    # BCrypt, for the SHA-256 the updater checks a download against. Windows'
+    # own implementation rather than a hashing crate: Barometer ships unsigned,
+    # so that digest is the only thing between a user and running whatever
+    # arrived over the wire, and it should not come from a dependency nobody
+    # has read.
+    "Win32_Security_Cryptography",
+    # Keyboard handling in the settings window: arrow keys move the selection,
+    # space toggles it, and a settings window that can only be driven with a
+    # mouse is one somebody cannot use.
+    "Win32_UI_Input_KeyboardAndMouse",
+    # DWM, for the settings window's rounded corners and dark title bar. Both
+    # are what makes a Win32 window look like it belongs on Windows 11 rather
+    # than on Windows 7.
+    "Win32_Graphics_Dwm",
+    # The tooltip control, for the hover detail the strip has no room to show.
+    # comctl32 version 6 comes from the manifest; this is the other half of it.
+    "Win32_UI_Controls",
+    # CreateFileW, to ask the object manager whether PawnIO's device object is
+    # there. Nothing here opens a file: the probe requests no access rights and
+    # sends no IOCTL, because "does this name resolve, and would we be let in"
+    # is the whole question and Barometer never talks to that driver.
+    "Win32_Storage_FileSystem",
+    # AttachConsole. A GUI-subsystem binary has no standard handles, so the
+    # diagnostic modes print into nowhere unless they borrow the console they
+    # were launched from.
+    "Win32_System_Console",
+    # GetModuleHandleW, to load the application icon out of the executable's
+    # own resources for the settings window's title bar.
+    "Win32_System_LibraryLoader",
+    # UI Automation enumerates the taskbar buttons on a background COM thread
+    # to distinguish a real foreign icon from the chevron's brief tray
+    # re-layout.
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    # The clipboard, for the network panel copying an address.
+    "Win32_System_DataExchange",
+    # SHGetFileInfoW, for a process's icon, takes a file-attribute flag type.
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+]

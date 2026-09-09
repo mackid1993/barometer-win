@@ -1,0 +1,23 @@
+/target/
+/dist/
+
+# .NET build output for the sensor helper
+helper/bin/
+helper/obj/
+
+# Visual Studio / MSVC leftovers
+*.pdb
+*.ilk
+.vs/
+
+# local-only working notes
+CLAUDE.md
+
+# The sensor helper's build output. `dotnet publish` leaves a self-contained
+# runtime in here; the release artifact is what build.ps1 stages out of
+# helper/bin/Release/net8.0/win-x64/publish, not this.
+/helper/bin/
+/helper/obj/
+
+# Local build configuration; the target-dir path is per machine.
+/.cargo/

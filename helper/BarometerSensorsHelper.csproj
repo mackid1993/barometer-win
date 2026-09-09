@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Self-contained and single file, so nobody has to install a .NET
+         runtime to get temperatures. The size is the price of that and it is
+         worth paying: the alternative is a second prerequisite in the
+         installer for a program whose whole appeal is that it is small and
+         does not ask for things.
+
+         .NET 10 is not a preference. LibreHardwareMonitor's releases carry a
+         .NET Framework 4.7.2 build and a .NET 10 build and nothing between
+         them. The 4.7.2 library loads into a .NET 8 host and then dies with a
+         TypeLoadException at open, and the .NET 10 library will not load into
+         a .NET 8 host at all. Matching upstream's modern build is the only
+         combination that works, and it is the one that will keep working. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>barometer-sensors</AssemblyName>
+    <!-- No PDB, and no reference to one. A .NET executable records the full
+         path of its debug file in the PE debug directory, so a helper built
+         here shipped with the author's account name, real name and folder
+         layout in plain ASCII - readable by anyone who runs `strings` on it.
+         The Rust side avoids this by remapping path prefixes; this is the same
+         fix for the same problem, and build.ps1 fails the build if either
+         regresses.
+
+         Nobody is going to debug a shipped copy of a program whose entire
+         interface is one line of JSON, so there is nothing to lose. -->
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- Belt and braces for anything else that would embed a source path,
+         and it makes the build reproducible while it is here. -->
+    <PathMap>$(MSBuildProjectDirectory)=.</PathMap>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compiled against, never shipped. ExcludeAssets="runtime" is the point
+         of this reference: it puts LibreHardwareMonitor on the compiler's
+         reference path and keeps every byte of it out of our output, so the
+         helper builds against the library and then finds it at run time in an
+         installation the user chose. Barometer does not redistribute
+         LibreHardwareMonitor. See LibraryLocator.cs and NOTICE.md. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6"
+                      ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

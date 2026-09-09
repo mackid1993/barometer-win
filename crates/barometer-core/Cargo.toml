@@ -1,0 +1,81 @@
+[package]
+name = "barometer-core"
+description = "Sampling engine and readout modules for Barometer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# LibreHardwareMonitor's /data.json is a nested tree of heterogeneous nodes,
+# which is exactly the shape a hand-written parser gets subtly wrong. serde_json
+# is also what Clicker already uses, so this adds a crate to the tree and no new
+# convention. The HTTP that carries it is written here rather than pulled in:
+# see sensors/lhm.rs for why talking to 127.0.0.1 does not need a TLS stack.
+serde_json = "1"
+
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    # GetSystemTimes and GlobalMemoryStatusEx. Processor time and physical
+    # memory both come from plain syscalls, with no performance counter and no
+    # driver in the way.
+    "Win32_System_SystemInformation",
+    # GetSystemTimes is filed under Threading rather than SystemInformation,
+    # which is where you would look for it and where it is not. Also
+    # OpenProcess and TerminateProcess, for the end-task glyph on a process
+    # row.
+    "Win32_System_Threading",
+    # NtQuerySystemInformation, for the process list with every process's
+    # kernel and user time in one call, and per-processor times beside it.
+    # Toolhelp32 walks processes but carries no times; PDH has the Process
+    # counters but names instances "chrome#12" and renumbers them as
+    # processes come and go.
+    "Wdk_System_SystemInformation",
+    # SYSTEM_PROCESS_INFORMATION and SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION
+    # are declared here rather than beside the call that fills them.
+    "Win32_System_WindowsProgramming",
+    # GetPerformanceInfo: commit charge, the kernel pools and the process,
+    # thread and handle counts, which is the whole of the CPU flyout's
+    # System card and the memory flyout's Commit card in one call.
+    "Win32_System_ProcessStatus",
+    # GetIfTable2 and FreeMibTable. Interface byte counters come from the MIB
+    # rather than from PDH because PDH names its network instances in the
+    # user's display language and renames them when an adapter is renamed. The
+    # MIB table is keyed by LUID and holds still.
+    "Win32_NetworkManagement_IpHelper",
+    # MIB_IF_ROW2 is declared in terms of NDIS types, so the row is not
+    # nameable without this.
+    "Win32_NetworkManagement_Ndis",
+    # SHAppBarMessage(ABM_GETTASKBARPOS), for which edge the taskbar is docked
+    # to and how tall it is. Both are load-bearing: side edges are refused, and
+    # the strip sizes itself to the height it finds.
+    "Win32_UI_Shell",
+    # Job objects, so the sensor helper cannot outlive us. A child still
+    # running after its parent crashed is a process leak the user has to find
+    # in Task Manager, and they will not.
+    # PDH, for GPU and disk counters. Windows publishes GPU utilization and
+    # per-disk throughput only through performance counters; there is no plain
+    # API for either.
+    "Win32_System_Performance",
+    "Win32_System_JobObjects",
+    # CreateJobObjectW takes SECURITY_ATTRIBUTES, so its declaration is gated
+    # behind this even though we pass null for it.
+    "Win32_Security",
+    # WinHTTP, for the one HTTPS request Barometer makes. Open-Meteo is HTTPS
+    # only, and the alternative is a TLS stack and an async runtime in the
+    # binary for a request made four times an hour. See net.rs.
+    "Win32_Networking",
+    "Win32_Networking_WinHttp",
+    # GetAdaptersAddresses returns socket addresses, and the TCP tables that
+    # per-process traffic is summed from are keyed by them.
+    "Win32_Networking_WinSock",
+    # The WLAN API, for the radio behind a Wi-Fi connection.
+    "Win32_NetworkManagement_WiFi",
+    # Drive letters, volume labels and free space, for the disks panel.
+    "Win32_Storage_FileSystem",
+    # The storage property query, for what a physical disk is called.
+    "Win32_System_Ioctl",
+    "Win32_System_IO",
+] }

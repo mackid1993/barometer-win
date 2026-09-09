@@ -1,0 +1,53 @@
+[package]
+name = "barometer"
+description = "A system monitor for the Windows taskbar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+build = "build.rs"
+
+# Nothing but `main` lives here, and that is deliberate. The build script links
+# the icon, the version block and the manifest, and a build script's link
+# arguments reach every target in its package - test harnesses included. The
+# manifest requires administrator, so a package with tests in it could not run
+# them without elevation. This package has no tests; barometer-app has them all.
+[[bin]]
+name = "barometer"
+path = "src/main.rs"
+# No test harness for this target. Cargo builds one even for a binary with no
+# tests in it, and that harness links the same manifest the executable does -
+# so `cargo test` asked for elevation and failed with "The requested operation
+# requires elevation. (os error 740)" before running a single test.
+test = false
+
+[build-dependencies]
+# The icon, the version block and the manifest, compiled into the executable.
+# Explorer, the taskbar and Alt+Tab read a Win32 resource; naming the .ico in
+# the installer script only dresses the installer.
+winresource = "0.1"
+
+[dependencies]
+barometer-app = { path = "../barometer" }
+barometer-core = { path = "../barometer-core" }
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    # AttachConsole. A GUI-subsystem binary has no standard handles, so the
+    # diagnostic modes print into nowhere unless they borrow the console they
+    # were launched from.
+    "Win32_System_Console",
+    # A named mutex keeps two strip processes from deleting and re-adding the
+    # same fixed tray-icon identities underneath each other.
+    "Win32_System_Threading",
+    # MessageBoxW, for the things that have to be said when there is no console
+    # to say them in - a taskbar docked to a side edge, most of all.
+    "Win32_UI_WindowsAndMessaging",
+    # The marks sheet draws into a DIB and writes it out by hand.
+    "Win32_Graphics_Gdi",
+]

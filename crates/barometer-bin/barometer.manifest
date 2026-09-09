@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="Barometer" version="1.0.0.0" processorArchitecture="*"/>
+
+  <!-- Administrator, and not by preference.
+
+       Temperatures come from model-specific registers, and reading an MSR is a
+       ring-0 operation however it is dressed up: PawnIO installed and running
+       changes nothing about that. Measured on the author's machine, same
+       binary, same driver, the only difference being elevation - unelevated,
+       144 sensors and every one of the 38 temperatures unreadable; elevated,
+       196 sensors and all 43 temperatures readable, including 35 CPU cores.
+       There is no unprivileged path to the number, so a monitor that will not
+       elevate is a monitor without temperatures.
+
+       This is also what every other tool in the category does; TrafficMonitor
+       sets RequireAdministrator in every one of its configurations.
+
+       The cost is a UAC prompt on a manual launch. The installer answers that
+       by starting Barometer through a scheduled task with highest privileges,
+       which runs elevated at sign-in with no prompt at all. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <!-- Per-monitor DPI awareness, declared here as well as called for in code.
+       The manifest wins where both are present, and it applies from the first
+       instruction rather than from whenever main() gets around to it. Without
+       it Windows virtualises every coordinate and a 48 pixel taskbar measures
+       as 32 on a 150% display. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <!-- UTF-8 for the ANSI code page, so any narrow Win32 call that slips in
+           does not mangle a place name. -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!-- The version 6 common controls, for tooltips that look like Windows 11
+       rather than Windows 95. Without this the process gets the version 5
+       controls and every tooltip is a grey rectangle. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
+                        version="6.0.0.0" processorArchitecture="*"
+                        publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11. Barometer refuses to run on anything below 11 at
+           run time; this is what keeps the OS version APIs telling the truth. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>
