@@ -298,6 +298,15 @@ mod steady_tests {
 }
 
 /// A block of reserved tray space.
+/// How long the readout must want fewer tray slots before it gives one back.
+///
+/// Only shrinking waits; growing is immediate. Every added or removed
+/// placeholder makes the shell repack the notification area and slide every
+/// icon in it sideways, so a width that wanders across a slot boundary drags
+/// the user's tray icons back and forth with it. Four seconds is longer than
+/// any flicker and shorter than anybody's patience.
+const SETTLE: Duration = Duration::from_secs(4);
+
 pub struct Reservation {
     owner: HWND,
     icon: HICON,
@@ -312,6 +321,9 @@ pub struct Reservation {
     /// seed runs high, so a measurement always wins.
     slot_width: i32,
     seed_width: i32,
+    /// When the readout first asked for fewer slots than it holds, or None
+    /// while it is not asking to shrink. See `settled`.
+    shrink_since: Option<Instant>,
     steady: Steady,
     /// Placeholders that reported a rectangle in the taskbar on the last pass,
     /// against `held`. Only interesting to the trace, and the trace is how the
@@ -375,6 +387,7 @@ impl Reservation {
             pending: Vec::new(),
             slot_width: seed,
             seed_width: seed,
+            shrink_since: None,
             steady: Steady::default(),
             seen: 0,
             taskbar_buttons: TaskbarButtons::new(),
@@ -430,7 +443,7 @@ impl Reservation {
     /// Call it every tick: this is where placeholders are added, promotions
     /// retried, the region re-measured, and a dead block rotated away from.
     pub fn set_width(&mut self, width: i32) {
-        let wanted = slots_for_width(width, self.slot_width);
+        let wanted = self.settled(slots_for_width(width, self.slot_width));
         if wanted == 0 {
             self.release();
             return;
@@ -443,6 +456,42 @@ impl Reservation {
         // The sweep only needs to know how many of ours to expect. Where they
         // are is measured here, by GUID, which is exact and costs nothing.
         self.taskbar_buttons.set_placeholders(self.held);
+    }
+
+    /// The count to actually hold, given what this tick asked for.
+    ///
+    /// Growth is immediate: too few slots means the readout is clipped, and
+    /// there is nothing to be gained by being slow about it. Shrinking waits
+    /// until the smaller figure has held for `SETTLE`.
+    ///
+    /// The asymmetry is the whole point. Adding or removing a placeholder
+    /// makes the shell repack the notification area, which slides every icon
+    /// in it sideways - so a readout whose width wanders across a slot
+    /// boundary drags the user's tray icons back and forth with it. The
+    /// readout's own columns are already held at a fixed width, but the total
+    /// still crosses a boundary from time to time: a sensor that starts
+    /// reporting, a rate that reaches a wider unit, the weather arriving.
+    /// Letting the count fall only after it has stayed down for a few seconds
+    /// turns a shuffle into a single move.
+    fn settled(&mut self, wanted: usize) -> usize {
+        let now = Instant::now();
+        if wanted >= self.held {
+            // Wider, or no change: take it now and start the clock again.
+            self.shrink_since = None;
+            return wanted;
+        }
+        match self.shrink_since {
+            // Narrower, and it has been narrower long enough to believe.
+            Some(since) if now.duration_since(since) >= SETTLE => {
+                self.shrink_since = None;
+                wanted
+            }
+            Some(_) => self.held,
+            None => {
+                self.shrink_since = Some(now);
+                self.held
+            }
+        }
     }
 
     /// Adds or removes placeholders until the count matches.
