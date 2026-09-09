@@ -87,6 +87,8 @@ const SETTINGS_GLYPH: &str = "\u{E713}";
 const TIMER_DISMISS: usize = 1;
 const TIMER_FADE: usize = 2;
 const TIMER_TICK: usize = 3;
+/// Relaxes the elastic overscroll - see `stretch`.
+const TIMER_STRETCH: usize = 4;
 /// The Mac monitor's cadence, for the press-outside watch.
 const DISMISS_MS: u32 = 50;
 const FADE_MS: u32 = 10;
@@ -97,6 +99,45 @@ const OPEN: Duration = Duration::from_millis(150);
 const CLOSE: Duration = Duration::from_millis(100);
 const SLIDE_DIP: f32 = 8.0;
 const SCROLL_STEP: f32 = 48.0;
+
+/// The stretch after pulling `by` further from `current`.
+///
+/// The resistance is the usual hyperbolic one: the first pixels come almost
+/// free and each one after costs more, so the edge is soft at first touch and
+/// firm if leaned on. `STRETCH_MAX` is an asymptote rather than a clamp,
+/// which is why the page never hits a second hard stop after the first.
+///
+/// The sum is done in the un-resisted domain - the pull is undone, added to,
+/// and redone - so that repeated notches keep having a smaller effect instead
+/// of each one starting the curve again, and so that pulling and then pushing
+/// back the same distance lands where it started.
+fn stretched(current: f32, by: f32) -> f32 {
+    let raw = STRETCH_MAX * current / (STRETCH_MAX - current.abs()).max(f32::EPSILON);
+    let raw = raw + by;
+    STRETCH_MAX * raw / (STRETCH_MAX + raw.abs())
+}
+
+/// How far past its end a page can be pulled, in DIPs.
+///
+/// The stretch never reaches this: the resistance below is asymptotic, so
+/// this is the limit an infinitely determined scroll approaches rather than a
+/// distance anybody will see. About a row and a half, which is enough to read
+/// as give and not so much that the page looks detached.
+const STRETCH_MAX: f32 = 56.0;
+
+/// What fraction of the stretch is left after each relax tick.
+///
+/// At the 10 ms cadence below this settles in about a fifth of a second -
+/// quick enough to feel like a release rather than an animation to sit
+/// through, slow enough to be seen at all.
+const STRETCH_DECAY: f32 = 0.80;
+
+/// Below this the stretch is over, in DIPs. Anything smaller cannot be drawn
+/// and would otherwise halve forever.
+const STRETCH_DONE: f32 = 0.35;
+
+/// How often the stretch relaxes, in milliseconds.
+const STRETCH_MS: u32 = 10;
 /// One wheel notch across a sideways-scrolling picture: three hours of the
 /// weather chart, which is one labeled block, so the labels stay put against
 /// the plate's edge as the chart steps along.
@@ -215,6 +256,19 @@ struct Panel {
     fonts: FontCache,
     layout: Option<Layout>,
     scroll: f32,
+    /// How far the page is pulled past one of its ends, in DIPs,
+    /// positive meaning the content has been dragged down off the top.
+    ///
+    /// Kept apart from `scroll` rather than folded into it, so that
+    /// everything which asks where in the page we are - the scrollbar
+    /// thumb, the clamp, a layout rebuilt on a tick - keeps getting the
+    /// honest answer. Only the drawing and the hit testing are offset by
+    /// it, and those two together are what makes this a moved page rather
+    /// than a picture sliding over its own controls.
+    stretch: f32,
+    /// Whether the relax timer is running, so a long scroll against the
+    /// end does not arm it once per notch.
+    stretching: bool,
     /// Where each sideways-scrolling picture has been scrolled to, by its
     /// id, so that a layout rebuilt on a tick or a hover keeps the chart
     /// where the user left it. Forgotten when the panel opens afresh.
@@ -243,6 +297,8 @@ impl Panel {
             fonts: FontCache::new(&families),
             layout: None,
             scroll: 0.0,
+            stretch: 0.0,
+            stretching: false,
             hscroll: Vec::new(),
             drag: None,
             hover: None,
@@ -443,6 +499,7 @@ impl Panel {
             self.fonts.clear();
         }
         self.scroll = 0.0;
+        self.stretch = 0.0;
         self.hscroll.clear();
         self.end_drag();
         self.hover = None;
@@ -532,7 +589,13 @@ impl Panel {
         unsafe {
             KillTimer(self.hwnd, TIMER_DISMISS);
             KillTimer(self.hwnd, TIMER_TICK);
+            // A page left mid-stretch when the panel closed would keep a
+            // timer running against a hidden window, and come back still
+            // bent the next time it opened.
+            KillTimer(self.hwnd, TIMER_STRETCH);
         }
+        self.stretch = 0.0;
+        self.stretching = false;
         if let Some(index) = self.active {
             self.contents[index].closed();
         }
@@ -671,7 +734,7 @@ impl Panel {
         if !self.viewport().contains(x, y) {
             return None;
         }
-        ui::scroll_at(&layout.content, x, y + self.scroll)
+        ui::scroll_at(&layout.content, x, y + self.scroll - self.stretch)
     }
 
     /// Moves the picture with `id` to an offset, and repaints if it moved.
@@ -708,7 +771,7 @@ impl Panel {
         if y >= footer_top {
             return ui::hit(&layout.footer, x, y - footer_top);
         }
-        ui::hit(&layout.content, x, y + self.scroll)
+        ui::hit(&layout.content, x, y + self.scroll - self.stretch)
     }
 
     // ---- painting -------------------------------------------------------
@@ -750,7 +813,7 @@ impl Panel {
         let (width, height) = self.client();
         let viewport = self.viewport();
         let accent = self.accent();
-        let (hover, pressed, scroll) = (self.hover, self.pressed, self.scroll);
+        let (hover, pressed, scroll) = (self.hover, self.pressed, self.scroll - self.stretch);
         let Some(layout) = self.layout.as_ref() else { return };
         let palette = &self.palette;
         let mut canvas = Canvas::new(dc, scale, &mut self.fonts);
@@ -760,7 +823,9 @@ impl Panel {
 
         let clip = surface.clip(viewport);
         paint::draw(&mut surface, &layout.content, hover, pressed, 0.0, -scroll, viewport);
-        if let Some((y, h)) = scroll_thumb(viewport.h, layout.content_h, scroll) {
+        // The thumb rides the real position, not the stretched one: it marks
+        // where in the page you are, and the page has not moved.
+        if let Some((y, h)) = scroll_thumb(viewport.h, layout.content_h, self.scroll) {
             let thumb = Rect::new(width - 6.0, viewport.y + y + 4.0, 3.0, (h - 8.0).max(16.0));
             surface.fill_round(thumb, 1.5, palette.theme.stroke_strong);
         }
@@ -952,7 +1017,7 @@ impl Panel {
                 return;
             }
         }
-        self.set_scroll(self.scroll - delta * SCROLL_STEP);
+        self.scroll_elastically(self.scroll - delta * SCROLL_STEP);
     }
 
     /// A horizontal wheel, or a trackpad's sideways swipe: positive is to
@@ -970,6 +1035,63 @@ impl Panel {
             self.scroll = clamped;
             self.invalidate();
         }
+    }
+
+    /// Scrolls, and puts whatever would have gone past either end into the
+    /// stretch instead.
+    ///
+    /// The page does not simply stop at its end: it gives, by a diminishing
+    /// amount, and springs back when the wheel does. Only the part that could
+    /// not be scrolled becomes stretch, so a wheel notch in the middle of a
+    /// long page behaves exactly as it did.
+    fn scroll_elastically(&mut self, to: f32) {
+        let Some(layout) = self.layout.as_ref() else { return };
+        let clamped = clamp_scroll(to, self.viewport().h, layout.content_h);
+        // Positive is the top edge pulled down, which is the direction the
+        // content moves; past the bottom it is negative.
+        let past = clamped - to;
+        if past.abs() > f32::EPSILON {
+            self.stretch_by(past);
+        }
+        self.set_scroll(clamped);
+    }
+
+    /// Adds to the stretch, with the resistance that makes it feel elastic.
+    ///
+    /// The resistance is the usual hyperbolic one: the first pixels come
+    /// almost free and each one after costs more, so the edge is soft at
+    /// first touch and firm if leaned on. `STRETCH_MAX` is the asymptote
+    /// rather than a clamp, which is why the page never visibly hits a second
+    /// hard stop after the first.
+    fn stretch_by(&mut self, by: f32) {
+        let was = self.stretch;
+        self.stretch = stretched(was, by);
+        if (self.stretch - was).abs() > f32::EPSILON {
+            self.start_stretch_timer();
+            self.invalidate();
+        }
+    }
+
+    fn start_stretch_timer(&mut self) {
+        if self.stretching {
+            return;
+        }
+        self.stretching = true;
+        // SAFETY: a live window; the timer is killed when the stretch ends
+        // and again in WM_DESTROY.
+        unsafe { SetTimer(self.hwnd, TIMER_STRETCH, STRETCH_MS, None) };
+    }
+
+    /// Lets the page back to where it belongs, a little each tick.
+    fn on_stretch_timer(&mut self) {
+        self.stretch *= STRETCH_DECAY;
+        if self.stretch.abs() < STRETCH_DONE {
+            self.stretch = 0.0;
+            self.stretching = false;
+            // SAFETY: a live window and a timer this function owns.
+            unsafe { KillTimer(self.hwnd, TIMER_STRETCH) };
+        }
+        self.invalidate();
     }
 
     fn on_key(&mut self, key: u16) -> bool {
@@ -1206,6 +1328,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 TIMER_DISMISS => state.on_dismiss_timer(),
                 TIMER_FADE => state.on_fade_timer(),
                 TIMER_TICK => state.on_changed(),
+                TIMER_STRETCH => state.on_stretch_timer(),
                 _ => {}
             }
             0
@@ -1252,6 +1375,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             KillTimer(hwnd, TIMER_DISMISS);
             KillTimer(hwnd, TIMER_FADE);
             KillTimer(hwnd, TIMER_TICK);
+            KillTimer(hwnd, TIMER_STRETCH);
             PostQuitMessage(0);
             0
         }
@@ -1268,6 +1392,56 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_page_gives_less_the_harder_it_is_pulled_and_never_comes_off() {
+        // The first notch past the end should move the page a good way and
+        // each one after it less, which is what reads as elastic rather than
+        // as a page that simply kept scrolling.
+        let first = stretched(0.0, SCROLL_STEP);
+        let second = stretched(first, SCROLL_STEP) - first;
+        let third = stretched(stretched(first, SCROLL_STEP), SCROLL_STEP)
+            - stretched(first, SCROLL_STEP);
+        assert!(first > 0.0);
+        assert!(second < first, "{second} should be less than {first}");
+        assert!(third < second, "{third} should be less than {second}");
+
+        // Leaned on indefinitely it approaches the limit and never reaches
+        // it, so there is no second hard stop to hit.
+        let mut far = 0.0;
+        for _ in 0..500 {
+            far = stretched(far, SCROLL_STEP);
+        }
+        assert!(far < STRETCH_MAX, "{far} reached the asymptote");
+        assert!(far > STRETCH_MAX * 0.9, "{far} never got near it");
+    }
+
+    #[test]
+    fn pulling_and_pushing_back_the_same_distance_lands_where_it_started() {
+        // The resistance is applied to the total, not to each step, so the
+        // page does not creep away from its end while it is scrolled to and
+        // fro against it.
+        let pulled = stretched(stretched(0.0, 30.0), 20.0);
+        let returned = stretched(pulled, -50.0);
+        assert!(returned.abs() < 0.01, "came back to {returned}");
+    }
+
+    #[test]
+    fn the_other_end_behaves_the_same_way_upside_down() {
+        assert!((stretched(0.0, -SCROLL_STEP) + stretched(0.0, SCROLL_STEP)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_stretch_relaxes_to_nothing_in_a_reasonable_number_of_ticks() {
+        // Long enough to be seen, short enough not to be waited through.
+        let mut left: f32 = STRETCH_MAX;
+        let mut ticks = 0;
+        while left.abs() >= STRETCH_DONE {
+            left *= STRETCH_DECAY;
+            ticks += 1;
+        }
+        let millis = ticks * STRETCH_MS;
+        assert!((80..400).contains(&millis), "settles in {millis} ms");
+    }
     use super::*;
 
     fn measure(text: &str, style: Style, _wrap: f32) -> (f32, f32) {
