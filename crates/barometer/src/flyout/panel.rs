@@ -125,19 +125,29 @@ fn stretched(current: f32, by: f32) -> f32 {
 /// as give and not so much that the page looks detached.
 const STRETCH_MAX: f32 = 56.0;
 
-/// What fraction of the stretch is left after each relax tick.
+/// What fraction of the stretch is left after each further 10 ms.
 ///
-/// At the 10 ms cadence below this settles in about a fifth of a second -
-/// quick enough to feel like a release rather than an animation to sit
-/// through, slow enough to be seen at all.
+/// Applied against the clock rather than once per timer message. A panel
+/// repaint is not free - a chart is a few hundred GDI+ primitives - so at a
+/// 60-per-second timer the messages coalesce whenever a paint runs long, and
+/// a decay applied per message then moves the page by however many ticks
+/// happened to arrive. That is what made the spring-back jerk: not the curve,
+/// the bookkeeping. Scaled by elapsed time it covers the same ground in the
+/// same fifth of a second whether it gets sixty frames or twenty.
 const STRETCH_DECAY: f32 = 0.80;
+
+/// The span `STRETCH_DECAY` is quoted over, in milliseconds.
+const STRETCH_DECAY_MS: f32 = 10.0;
 
 /// Below this the stretch is over, in DIPs. Anything smaller cannot be drawn
 /// and would otherwise halve forever.
 const STRETCH_DONE: f32 = 0.35;
 
-/// How often the stretch relaxes, in milliseconds.
-const STRETCH_MS: u32 = 10;
+/// How often the stretch is asked to relax, in milliseconds.
+///
+/// About sixty a second, which is as often as there is any point redrawing.
+/// The decay does not depend on this: see `STRETCH_DECAY`.
+const STRETCH_MS: u32 = 16;
 /// One wheel notch across a sideways-scrolling picture: three hours of the
 /// weather chart, which is one labeled block, so the labels stay put against
 /// the plate's edge as the chart steps along.
@@ -269,6 +279,9 @@ struct Panel {
     /// Whether the relax timer is running, so a long scroll against the
     /// end does not arm it once per notch.
     stretching: bool,
+    /// When the stretch last changed, so the relax is measured against
+    /// the clock rather than against however many timer messages arrived.
+    stretched_at: Instant,
     /// Where each sideways-scrolling picture has been scrolled to, by its
     /// id, so that a layout rebuilt on a tick or a hover keeps the chart
     /// where the user left it. Forgotten when the panel opens afresh.
@@ -299,6 +312,7 @@ impl Panel {
             scroll: 0.0,
             stretch: 0.0,
             stretching: false,
+            stretched_at: Instant::now(),
             hscroll: Vec::new(),
             drag: None,
             hover: None,
@@ -1073,6 +1087,9 @@ impl Panel {
     }
 
     fn start_stretch_timer(&mut self) {
+        // Re-based on every pull, so a stretch that is being added to does not
+        // relax by the time since the *first* pull the moment it is released.
+        self.stretched_at = Instant::now();
         if self.stretching {
             return;
         }
@@ -1082,9 +1099,11 @@ impl Panel {
         unsafe { SetTimer(self.hwnd, TIMER_STRETCH, STRETCH_MS, None) };
     }
 
-    /// Lets the page back to where it belongs, a little each tick.
+    /// Lets the page back to where it belongs, by however long it has been.
     fn on_stretch_timer(&mut self) {
-        self.stretch *= STRETCH_DECAY;
+        let elapsed = self.stretched_at.elapsed().as_secs_f32() * 1000.0;
+        self.stretched_at = Instant::now();
+        self.stretch *= STRETCH_DECAY.powf(elapsed / STRETCH_DECAY_MS);
         if self.stretch.abs() < STRETCH_DONE {
             self.stretch = 0.0;
             self.stretching = false;
@@ -1431,16 +1450,25 @@ mod tests {
     }
 
     #[test]
-    fn the_stretch_relaxes_to_nothing_in_a_reasonable_number_of_ticks() {
+    fn the_stretch_relaxes_in_the_same_time_however_many_frames_it_gets() {
+        // The decay is against the clock, not against timer messages, so a
+        // panel that paints slowly springs back over the same span as one
+        // that paints quickly - it just does it in fewer, larger steps. This
+        // is the difference between a spring and a stutter.
+        let settle = |frame_ms: f32| -> f32 {
+            let mut left: f32 = STRETCH_MAX;
+            let mut elapsed = 0.0;
+            while left.abs() >= STRETCH_DONE && elapsed < 5_000.0 {
+                left *= STRETCH_DECAY.powf(frame_ms / STRETCH_DECAY_MS);
+                elapsed += frame_ms;
+            }
+            elapsed
+        };
+        let quick = settle(STRETCH_MS as f32);
+        let slow = settle(50.0);
+        assert!((quick - slow).abs() < 60.0, "{quick} ms against {slow} ms");
         // Long enough to be seen, short enough not to be waited through.
-        let mut left: f32 = STRETCH_MAX;
-        let mut ticks = 0;
-        while left.abs() >= STRETCH_DONE {
-            left *= STRETCH_DECAY;
-            ticks += 1;
-        }
-        let millis = ticks * STRETCH_MS;
-        assert!((80..400).contains(&millis), "settles in {millis} ms");
+        assert!((80.0..500.0).contains(&quick), "settles in {quick} ms");
     }
     use super::*;
 
