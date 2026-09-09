@@ -401,6 +401,15 @@ fn main() {
         return;
     }
 
+    if env::args().any(|a| a == "--menu") {
+        // The right-click menu on its own, for looking at it. See
+        // window::preview_menu for why it cannot be photographed any other
+        // way. It sits there until dismissed, which is what a screenshot
+        // needs.
+        window::preview_menu(500, 500);
+        return;
+    }
+
     if env::args().any(|a| a == "--settings") {
         // The settings window on its own, with no readout behind it. For
         // looking at the window itself: reaching it through the right-click

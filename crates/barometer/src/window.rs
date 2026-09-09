@@ -38,10 +38,10 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     FindWindowW, GetCursorPos, LoadCursorW, SetForegroundWindow, SetMenuInfo,
-    TrackPopupMenu, IDC_ARROW, MENUINFO, MF_OWNERDRAW, MF_SEPARATOR, MIM_STYLE, MSGF_MENU, WM_ENTERIDLE,
+    TrackPopupMenu, IDC_ARROW, MENUINFO, MF_OWNERDRAW, MF_SEPARATOR, MIM_BACKGROUND, MIM_STYLE, MSGF_MENU, WM_ENTERIDLE,
     MNS_NOCHECK, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM,
     WM_RBUTTONUP,
-    GetWindowLongPtrW, RegisterClassW, SetWindowLongPtrW,
+    DestroyWindow, GetWindowLongPtrW, RegisterClassW, SetWindowLongPtrW,
     SetWindowPos, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_APP,
     GetAncestor, GetDesktopWindow, GetWindow, GetWindowThreadProcessId, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, OBJID_WINDOW,
@@ -1689,9 +1689,14 @@ unsafe fn menu_draw(item: &DRAWITEMSTRUCT) {
     let Some(look) = MENU_LOOK.lock().ok().and_then(|look| look.clone()) else { return };
     let dc = item.hDC;
     let theme = &look.theme;
-    // Nothing is filled here. The row used to paint itself the card color,
-    // which put an opaque rectangle over the menu's backdrop and left the
-    // margins around the rows as the only part of it anybody could see.
+    // The row paints its own background, because with MF_OWNERDRAW nothing
+    // else does: Windows hands over the item rectangle and whatever is in it
+    // is whatever was in the buffer. Leaving it unpainted to let the menu's
+    // own backdrop through does not reveal a backdrop, it reveals garbage -
+    // rows came up as dark plates over a white menu with white text on them.
+    let ground = CreateSolidBrush(theme.surface_card.colorref());
+    FillRect(dc, &item.rcItem, ground);
+    DeleteObject(ground as _);
 
     let Some(label) = menu_label(item.itemID) else {
         let inset = look.px(8.0);
@@ -1773,6 +1778,93 @@ unsafe fn dress_menu_window(menu: HWND) {
     );
 }
 
+/// Pops the right-click menu on its own, at a fixed place, for looking at it.
+///
+/// The menu is the hardest thing in this program to photograph. It belongs to
+/// the system, it only exists while `TrackPopupMenu` is blocking, and the
+/// process is manifested to require administrator - so injected clicks from an
+/// unelevated capture script are dropped by Windows before they reach the
+/// strip, and the menu never opens at all. This pops it directly, with an
+/// owner of its own, so a screenshot has something to take.
+pub fn preview_menu(x: i32, y: i32) {
+    // A class of its own rather than a predefined one: WM_MEASUREITEM and
+    // WM_DRAWITEM are sent to the menu's *owner*, so a STATIC window leaves
+    // every row unmeasured and the menu comes up a few pixels wide.
+    // SAFETY: a class registered once, a window destroyed below, and a menu
+    // the callee owns.
+    unsafe {
+        let class = wide("BarometerMenuPreview");
+        let registered = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(preview_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: std::ptr::null_mut(),
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: std::ptr::null_mut(),
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class.as_ptr(),
+        };
+        RegisterClassW(&registered);
+        let owner = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        if owner.is_null() {
+            return;
+        }
+        windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y);
+        show_menu(owner);
+        DestroyWindow(owner);
+    }
+}
+
+/// Measures and draws the preview's rows the way the strip's own procedure
+/// does, which is the whole reason the preview needs a procedure at all.
+unsafe extern "system" fn preview_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_MEASUREITEM => {
+            let item = lparam as *mut MEASUREITEMSTRUCT;
+            if !item.is_null() && (*item).CtlType == ODT_MENU {
+                menu_measure(hwnd, &mut *item);
+                return 1;
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        WM_DRAWITEM => {
+            let item = lparam as *const DRAWITEMSTRUCT;
+            if !item.is_null() && (*item).CtlType == ODT_MENU {
+                menu_draw(&*item);
+                return 1;
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        WM_ENTERIDLE => {
+            if wparam as u32 == MSGF_MENU {
+                dress_menu_window(lparam as HWND);
+            }
+            0
+        }
+        _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
+
 /// Pops the right-click menu and returns what was chosen.
 ///
 /// Built each time rather than kept, because it is shown at most a few times a
@@ -1791,20 +1883,21 @@ unsafe fn show_menu(hwnd: HWND) -> Option<Command> {
     let theme = crate::settings_ui::system::current_theme();
     let dpi = GetDpiForWindow(hwnd).max(96);
     let font = menu_font(dpi);
+    let ground = CreateSolidBrush(theme.surface_card.colorref());
     if let Ok(mut look) = MENU_LOOK.lock() {
         *look = Some(MenuLook { theme, font: font as isize, dpi });
     }
-    // No background of our own. A solid brush here painted over the backdrop
-    // Windows 11 gives a menu, which is the whole of what makes one look like
-    // it belongs to this version of Windows; the rows are still drawn on
-    // WM_DRAWITEM, over whatever the system put behind them. No check column
-    // either: nothing here is checkable and the gutter would sit empty.
+    // The background is the menu's own so the margins around the rows match
+    // them. It was briefly left to the system, on the theory that a menu
+    // painted by Windows would carry the Windows 11 backdrop - it does not,
+    // for an owner-drawn menu: see menu_draw. No check column: nothing here
+    // is checkable and the gutter would sit empty.
     let info = MENUINFO {
         cbSize: std::mem::size_of::<MENUINFO>() as u32,
-        fMask: MIM_STYLE,
+        fMask: MIM_BACKGROUND | MIM_STYLE,
         dwStyle: MNS_NOCHECK,
         cyMax: 0,
-        hbrBack: std::ptr::null_mut(),
+        hbrBack: ground,
         dwContextHelpID: 0,
         dwMenuData: 0,
     };
@@ -1834,6 +1927,7 @@ unsafe fn show_menu(hwnd: HWND) -> Option<Command> {
         std::ptr::null(),
     );
     DestroyMenu(menu);
+    DeleteObject(ground as _);
     if let Ok(mut look) = MENU_LOOK.lock() {
         *look = None;
     }
