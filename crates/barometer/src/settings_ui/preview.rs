@@ -19,6 +19,9 @@
 // order, which should move into one place once the strip reads its layout
 // from the store.
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use barometer_core::module::{ModuleId, Readout};
 use barometer_core::settings::StripFont;
 use barometer_core::stack::{format_sensor, StackLayout, StackMetric, UnitPrefs};
@@ -550,6 +553,52 @@ pub fn size_caption(font: &StripFont, snapshot: &Snapshot, count: usize) -> Stri
 
 #[cfg(test)]
 mod tests {
+    fn showing(text: &str) -> Column {
+        Column { top: String::new(), bottom: text.to_string(), ..Column::default() }
+    }
+
+    #[test]
+    fn a_column_reserves_what_it_has_needed_lately_and_not_what_it_could_ever_need() {
+        // The width used to be the widest string the reading could ever
+        // produce, which on a network column meant holding room for
+        // "1024 MB/s" while showing "105 KB/s". Five columns of worst case
+        // is most of the readout, and the readout buys its width from the
+        // notification area in whole icon slots.
+        let mut widths = ColumnWidths::default();
+        let start = Instant::now();
+        assert_eq!(widths.reserve(0, &showing("105 KB/s"), start), "105 KB/s");
+    }
+
+    #[test]
+    fn a_wider_reading_takes_effect_at_once_and_is_given_back_later() {
+        let mut widths = ColumnWidths::default();
+        let start = Instant::now();
+        widths.reserve(0, &showing("105 KB/s"), start);
+        // Instantly: the painter lays out to whichever of the reading and
+        // the reserve is wider, so a late reserve would shift the column
+        // rather than clip it - but shifting is the thing being avoided.
+        assert_eq!(widths.reserve(0, &showing("1.21 MB/s"), start), "1.21 MB/s");
+        // Still held while the spike is recent, so a download that drops to
+        // nothing between two samples does not shuffle the taskbar.
+        let soon = start + WIDTH_MEMORY / 2;
+        assert_eq!(widths.reserve(0, &showing("88 KB/s"), soon), "1.21 MB/s");
+        // And given back once it is no longer recent.
+        let later = start + WIDTH_MEMORY + Duration::from_secs(1);
+        assert_eq!(widths.reserve(0, &showing("88 KB/s"), later), "88 KB/s");
+    }
+
+    #[test]
+    fn a_strip_that_changed_shape_does_not_inherit_the_old_columns_widths() {
+        // Columns are remembered by their place, so index three in a strip
+        // of five is not index three in a strip of four; carrying the width
+        // over would hold space for a reading that has moved or gone.
+        let mut widths = ColumnWidths::default();
+        let start = Instant::now();
+        widths.match_count(1);
+        widths.reserve(0, &showing("1024 MB/s"), start);
+        widths.match_count(2);
+        assert_eq!(widths.reserve(0, &showing("9 KB/s"), start), "9 KB/s");
+    }
     use super::*;
     use barometer_core::store::Settings;
 
@@ -722,5 +771,80 @@ mod tests {
         }
         assert!(sample_readout(ModuleId::Network).secondary.is_some());
         assert!(sample_readout(ModuleId::Weather).badge.is_some());
+    }
+}
+
+/// How long a wide reading keeps its width after it stops happening.
+///
+/// Half a minute. Long enough that a download which drops to nothing between
+/// two samples does not shuffle the taskbar, short enough that a single spike
+/// gives the space back while the user is still looking at the same screen.
+const WIDTH_MEMORY: Duration = Duration::from_secs(30);
+
+/// The width each column keeps in reserve, remembered rather than assumed.
+///
+/// Every column used to reserve the widest string its reading could ever
+/// produce - a network column showing `105 KB/s` held room for `1024 MB/s` -
+/// so that the digits never shifted. That is the right idea and the wrong
+/// price: five columns of worst case is most of the readout's width, and the
+/// readout buys its space from the notification area in whole icon slots.
+///
+/// So the reserve is what this column has actually been in the last
+/// `WIDTH_MEMORY` instead. It grows the instant a reading needs more, because
+/// the painter takes the wider of the reading and the reserve and cannot clip
+/// either way; it gives the width back half a minute after the wide reading
+/// stops. Slot quantization absorbs most of that, so the taskbar itself only
+/// repacks when a change crosses a slot boundary.
+///
+/// Measured in characters rather than pixels because this side has no device
+/// context. For columns of digits and units in one font that tracks width
+/// closely, and being a little out costs a small shift rather than a clipped
+/// reading - the painter still lays out to whichever is wider.
+#[derive(Default)]
+pub struct ColumnWidths {
+    /// Per column, by its place on the strip: what it has shown lately and
+    /// when. Cleared when the strip's shape changes, since a column's index
+    /// no longer means the same column.
+    seen: Vec<VecDeque<(Instant, String)>>,
+}
+
+impl ColumnWidths {
+    /// Notes what this column is showing and answers with what to hold.
+    pub fn reserve(&mut self, at: usize, column: &Column, now: Instant) -> String {
+        // The wider of the two rows is what decides the column, so that is
+        // what is remembered.
+        let showing = [column.top.as_str(), column.bottom.as_str()]
+            .into_iter()
+            .max_by_key(|text| text.chars().count())
+            .unwrap_or_default()
+            .to_string();
+
+        if self.seen.len() <= at {
+            self.seen.resize(at + 1, VecDeque::new());
+        }
+        let history = &mut self.seen[at];
+        while history.front().is_some_and(|(at, _)| now.duration_since(*at) > WIDTH_MEMORY) {
+            history.pop_front();
+        }
+        history.push_back((now, showing));
+        history
+            .iter()
+            .map(|(_, text)| text)
+            .max_by_key(|text| text.chars().count())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Forgets everything, for when the columns are no longer the same
+    /// columns - a module switched on, a stack added, the order dragged.
+    pub fn forget(&mut self) {
+        self.seen.clear();
+    }
+
+    /// Forgets everything if the strip is not the shape it was.
+    pub fn match_count(&mut self, columns: usize) {
+        if self.seen.len() != columns {
+            self.forget();
+        }
     }
 }
