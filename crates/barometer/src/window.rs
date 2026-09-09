@@ -688,9 +688,19 @@ unsafe fn content_width(hwnd: HWND, state: &mut StripState) -> i32 {
     let previous = SelectObject(dc, font as _);
 
     let mark_px = mark_pixels(dc, &state.model);
-    let padding = dip_to_px(state.model.padding_dip, dpi);
     let gap = dip_to_px(state.model.gap_dip, dpi);
-    let mut width = padding * 2;
+    // The columns and the gaps between them, and nothing at the ends.
+    //
+    // The end padding used to be counted here, and it is the wrong thing to
+    // ask the tray for: space is reserved in whole icon slots, so a request a
+    // few pixels over a slot boundary costs a whole further slot - forty-odd
+    // pixels of taskbar to buy eight of margin. The reserved region is
+    // quantized upwards anyway, so it is nearly always wider than the readout
+    // and the painter centres in whatever it gets; that slack is where the
+    // margin actually comes from. `padding_dip` is a preference for how much
+    // of it to keep, not a demand for more space, and the chevron end is
+    // protected by the inset the placement leaves rather than by this.
+    let mut width = 0;
     for (index, column) in state.model.columns.iter().enumerate() {
         if index > 0 {
             width += gap;
@@ -1048,7 +1058,6 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
         (std::ptr::null_mut(), std::ptr::null_mut())
     };
 
-    let padding = dip_to_px(state.model.padding_dip, dpi);
     let gap = dip_to_px(state.model.gap_dip, dpi);
 
     // Centered in whatever width the window ended up with, rather than started
@@ -1057,12 +1066,15 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
     // and left-aligning piles all of that slack against the right-hand end
     // where it reads as a gap somebody forgot to close. Split evenly it reads
     // as margin.
+    // Centred in whatever width the window ended up with. The reserved region
+    // is quantized to whole tray slots, so it is almost always a little wider
+    // than the readout needs; splitting that slack evenly is where the margin
+    // at each end comes from, and it costs no tray space because it is space
+    // the slot had already been paid for. Left-aligning would pile all of it
+    // against the right-hand end, where it reads as a gap somebody forgot to
+    // close.
     let content = content_extent(memory_dc, state, gap, scale, mark_px, heading_font);
-    let mut x = if content < width - padding * 2 {
-        (width - content) / 2
-    } else {
-        padding
-    };
+    let mut x = ((width - content) / 2).max(0);
 
     let mut rects: Vec<RECT> = Vec::with_capacity(state.model.columns.len());
     for column in &state.model.columns {
