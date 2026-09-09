@@ -1098,6 +1098,16 @@ The file it could not read has been kept, at:
                     // by the time the fade finishes.
                     next_sample = Instant::now();
                 }
+                if panels_were_open && !panels_open {
+                    // The last panel has closed. The per-process figures are
+                    // gathered by asking the kernel to keep extended
+                    // statistics on every established connection on the
+                    // machine, and that stays on for the life of each
+                    // connection unless it is switched off - so a browser's
+                    // several hundred sockets would go on being accounted for
+                    // long after the panel that wanted them was gone.
+                    barometer_core::netinfo::stop_collecting();
+                }
                 panels_were_open = panels_open;
                 let summary = if flyout.is_open() {
                     barometer_core::sys::processes::summary()
