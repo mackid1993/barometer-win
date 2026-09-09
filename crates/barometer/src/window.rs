@@ -100,6 +100,9 @@ pub struct StripModel {
     pub text_dip: f32,
     pub two_rows: bool,
     pub font_family: String,
+    /// The family the labels are drawn in. Equal to `font_family` unless the
+    /// user chose a second one.
+    pub heading_font_family: String,
     /// The weight of the values.
     pub font_weight: u32,
     /// The weight of the labels above them.
@@ -687,6 +690,7 @@ impl Strip {
             // chosen in settings changed neither, so the old faces kept
             // drawing and the setting looked inert.
             let refaced = (*state).model.font_family != model.font_family
+                || (*state).model.heading_font_family != model.heading_font_family
                 || (*state).model.font_weight != model.font_weight
                 || (*state).model.heading_font_weight != model.heading_font_weight;
             (*state).model = model;
@@ -883,14 +887,15 @@ fn dip_to_px(dip: f32, dpi: u32) -> i32 {
 /// The font for the values.
 fn ensure_font(state: &mut StripState, dpi: u32) -> HFONT {
     let weight = state.model.font_weight;
-    let font = build_font(state, dpi, weight, |state| &mut state.font);
-    font
+    let family = state.model.font_family.clone();
+    build_font(state, dpi, &family, weight, |state| &mut state.font)
 }
 
-/// The font for the labels, which is a different weight and nothing else.
+/// The font for the labels, which may differ in family as well as weight.
 fn ensure_heading_font(state: &mut StripState, dpi: u32) -> HFONT {
     let weight = state.model.heading_font_weight;
-    build_font(state, dpi, weight, |state| &mut state.heading_font)
+    let family = state.model.heading_font_family.clone();
+    build_font(state, dpi, &family, weight, |state| &mut state.heading_font)
 }
 
 /// Builds and caches one of the two faces.
@@ -901,6 +906,7 @@ fn ensure_heading_font(state: &mut StripState, dpi: u32) -> HFONT {
 fn build_font(
     state: &mut StripState,
     dpi: u32,
+    wanted_family: &str,
     weight: u32,
     slot: fn(&mut StripState) -> &mut Option<HFONT>,
 ) -> HFONT {
@@ -944,7 +950,7 @@ fn build_font(
     // semibold headings came out as. The preview resolves the same way, so
     // the two agree about what semibold looks like.
     let family = crate::settings_ui::gdi::instance_family(
-        &state.model.font_family,
+        wanted_family,
         weight,
         installed_families(),
     );
@@ -954,7 +960,7 @@ fn build_font(
     // invites GDI to embolden a face that is already semibold. TrafficMonitor
     // writes `font_name = Segoe UI Semibold` with `font_style = 0` for the
     // same reason, and this is the same request.
-    logical.lfWeight = if family == state.model.font_family { weight } else { FW_NORMAL as i32 };
+    logical.lfWeight = if family == wanted_family { weight } else { FW_NORMAL as i32 };
     let family = wide(&family);
     for (index, unit) in family.iter().take(logical.lfFaceName.len()).enumerate() {
         logical.lfFaceName[index] = *unit;

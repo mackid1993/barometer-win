@@ -1561,6 +1561,12 @@ The file it could not read has been kept, at:
                 text_dip: density.text_dip,
                 two_rows: density.two_rows,
                 font_family: font.family.clone(),
+                // The labels' family, which is the values' family unless the
+                // user picked a second one.
+                heading_font_family: font
+                    .heading_family
+                    .clone()
+                    .unwrap_or_else(|| font.family.clone()),
                 font_weight: font.weight.dwrite_weight(),
                 heading_font_weight: font.heading_weight.dwrite_weight(),
             });

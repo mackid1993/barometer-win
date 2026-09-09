@@ -589,6 +589,7 @@ fn encode(settings: &Settings) -> Value {
     json!({
         "font": {
             "family": settings.font.family,
+            "headingFamily": optional(&settings.font.heading_family),
             "weight": settings.font.weight.raw_value(),
             "headingWeight": settings.font.heading_weight.raw_value(),
             "maxSizeDip": settings.font.max_size_dip
@@ -678,6 +679,7 @@ fn decode(document: &Value) -> Settings {
     Settings {
         font: StripFont {
             family: text(font, "family").unwrap_or(defaults.font.family),
+            heading_family: text(font, "headingFamily"),
             weight: text(font, "weight")
                 .and_then(|raw| FontWeight::from_raw(&raw))
                 .unwrap_or(defaults.font.weight),
@@ -993,6 +995,9 @@ mod tests {
         Settings {
             font: StripFont {
                 family: "Cascadia Mono".into(),
+                // Deliberately a different family from the values, which is
+                // the whole point of the setting.
+                heading_family: Some("Segoe UI Semibold".into()),
                 weight: FontWeight::Semibold,
                 heading_weight: FontWeight::Bold,
                 max_size_dip: 10.5,

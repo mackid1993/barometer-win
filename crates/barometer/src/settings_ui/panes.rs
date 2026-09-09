@@ -82,6 +82,9 @@ pub struct View<'a> {
     pub snapshot: &'a Snapshot,
     pub selection: Option<StripItem>,
     pub families: &'a [String],
+    /// Every (family, weight) GDI reports, so the weight controls can offer
+    /// only the weights a family actually has.
+    pub faces: &'a [(String, i32)],
     /// The unfolded family list, for asking whether a weight has a real face.
     pub instances: &'a [String],
     pub pawnio: pawnio::Status,
@@ -968,18 +971,42 @@ fn appearance_pane(b: &mut Builder, view: &View) {
     b.section("Text");
     b.card_begin();
     let (families, selected) = dropdown_items(view, Id::Family);
-    b.row_dropdown(Id::Family, "Font", None, &families[selected.min(families.len() - 1)], 280.0, true);
+    b.row_dropdown(
+        Id::Family,
+        "Font",
+        None,
+        &families[selected.min(families.len() - 1)],
+        280.0,
+        true,
+    );
+    let (heads, head) = dropdown_items(view, Id::HeadingFamily);
+    b.row_dropdown(
+        Id::HeadingFamily,
+        "Heading font",
+        Some("A face of its own for the names on the strip. On Windows a weight is often a family - Segoe UI Semibold is its own - so a heading can be a different face rather than only a heavier one."),
+        &heads[head.min(heads.len() - 1)],
+        280.0,
+        true,
+    );
     // One row, two weights: the strip is two kinds of text, a heading naming
     // the column and the number under it, and they are chosen side by side
     // so the relationship is on the screen rather than in a caption.
-    let (weights, heading) = dropdown_items(view, Id::HeadingWeight);
-    let (_, value) = dropdown_items(view, Id::Weight);
+    let (head_weights, heading) = dropdown_items(view, Id::HeadingWeight);
+    let (value_weights, value) = dropdown_items(view, Id::Weight);
     b.row_dropdown_pair(
         "Weight",
-        Some("Headings are the names on the strip, CPU and MEM; values are the numbers under them."),
+        Some("Headings are the names on the strip, CPU and MEM; values are the numbers under them. Only the weights each family has faces for are offered."),
         [
-            DropdownSpec { id: Id::HeadingWeight, name: "Headings", value: &weights[heading] },
-            DropdownSpec { id: Id::Weight, name: "Values", value: &weights[value] },
+            DropdownSpec {
+                id: Id::HeadingWeight,
+                name: "Headings",
+                value: &head_weights[heading.min(head_weights.len() - 1)],
+            },
+            DropdownSpec {
+                id: Id::Weight,
+                name: "Values",
+                value: &value_weights[value.min(value_weights.len() - 1)],
+            },
         ],
     );
     let size = font.max_size_dip;
@@ -1141,10 +1168,32 @@ pub fn dropdown_items(view: &View, id: Id) -> (Vec<String>, usize) {
             };
             (items, selected)
         }
+        Id::HeadingFamily => {
+            // The first entry is not a family: it is the absence of one.
+            let mut items = vec![SAME_FAMILY.to_string()];
+            let mut selected = 0;
+            for family in view.families {
+                if model.settings.font.heading_family.as_deref() == Some(family.as_str()) {
+                    selected = items.len();
+                }
+                items.push(family.clone());
+            }
+            (items, selected)
+        }
         Id::Weight | Id::HeadingWeight => {
-            let items = WEIGHTS.iter().map(|(weight, name)| weight_label(view, *weight, name)).collect();
-            let current = if id == Id::Weight { model.settings.font.weight } else { model.settings.font.heading_weight };
-            let selected = WEIGHTS.iter().position(|(w, _)| *w == current).unwrap_or(0);
+            // Only the weights this family has faces for. GDI never refuses a
+            // weight - asked for one a family cannot draw it smears the
+            // nearest face - so offering all five was offering four lies on a
+            // single-weight family.
+            let family = weight_family(model, id);
+            let offered = weights_offered(&family, view.faces);
+            let items = offered.iter().map(|(_, name)| name.to_string()).collect();
+            let current = if id == Id::Weight {
+                model.settings.font.weight
+            } else {
+                model.settings.font.heading_weight
+            };
+            let selected = offered.iter().position(|(w, _)| *w == current).unwrap_or(0);
             (items, selected)
         }
         Id::NetworkInterface => {
@@ -1316,6 +1365,46 @@ pub fn dropdown_items(view: &View, id: Id) -> (Vec<String>, usize) {
     }
 }
 
+/// What the heading-font control calls "no family of its own".
+pub const SAME_FAMILY: &str = "Same as the values";
+
+/// Which family a weight control belongs to.
+fn weight_family(model: &Model, id: Id) -> String {
+    let font = &model.settings.font;
+    match id {
+        Id::HeadingWeight => font.heading_family.clone().unwrap_or_else(|| font.family.clone()),
+        _ => font.family.clone(),
+    }
+}
+
+/// The weights `family` has faces for, named.
+///
+/// GDI's weights are numbers and the picker offers names, so each face is
+/// put in the nearest named bucket and the buckets nobody landed in are not
+/// offered. A family whose faces are all between two names collapses onto
+/// whichever is closer, which is the honest answer: that is the face the
+/// user would get.
+fn weights_offered(family: &str, faces: &[(String, i32)]) -> Vec<(FontWeight, &'static str)> {
+    let have = system::weights_for(family, faces);
+    let mut offered: Vec<(FontWeight, &'static str)> = Vec::new();
+    for weight in have {
+        let nearest = WEIGHTS
+            .iter()
+            .min_by_key(|(w, _)| (w.dwrite_weight() as i32 - weight).abs())
+            .copied();
+        if let Some(entry) = nearest {
+            if !offered.iter().any(|(w, _)| *w == entry.0) {
+                offered.push(entry);
+            }
+        }
+    }
+    offered.sort_by_key(|(w, _)| w.dwrite_weight());
+    if offered.is_empty() {
+        offered.push((FontWeight::Regular, "Regular"));
+    }
+    offered
+}
+
 const WEIGHTS: [(FontWeight, &str); 5] = [
     (FontWeight::Light, "Light"),
     (FontWeight::Regular, "Regular"),
@@ -1323,25 +1412,6 @@ const WEIGHTS: [(FontWeight, &str); 5] = [
     (FontWeight::Semibold, "Semibold"),
     (FontWeight::Bold, "Bold"),
 ];
-
-/// A weight's name, said the way the chosen family can actually draw it.
-///
-/// GDI never refuses a weight: asked for one the family has no face for, it
-/// draws the nearest one it does have and says nothing. Windows ships no
-/// Segoe UI Medium, so Medium was Regular pixel for pixel and the setting
-/// looked broken - which it was. Naming it here is the honest fix: the
-/// choice stays available, because a family that does have the face renders
-/// it properly, and the label says what will happen with this one.
-fn weight_label(view: &View, weight: FontWeight, name: &str) -> String {
-    let family = system::fold_family(&view.model.settings.font.family, view.families);
-    // The unfolded list: "Segoe UI Light" and "Segoe UI Semibold" are exactly
-    // the names folding removes, and they are what makes those weights real.
-    if crate::settings_ui::gdi::has_weight(&family, weight.dwrite_weight() as i32, view.instances) {
-        name.to_string()
-    } else {
-        format!("{name} \u{2014} {family} has no such face")
-    }
-}
 
 const LAYOUTS: [(StackLayout, &str); 2] = [
     (StackLayout::Columns, "Two rows, readings paired"),
@@ -1404,13 +1474,21 @@ pub fn choose(model: &mut Model, view: &ChoiceContext, id: Id, index: usize) -> 
                 }
             }
         }
+        Id::HeadingFamily => {
+            model.settings.font.heading_family = match index {
+                0 => None,
+                n => view.families.get(n - 1).cloned(),
+            };
+        }
         Id::Weight => {
-            if let Some((weight, _)) = WEIGHTS.get(index) {
+            let family = weight_family(model, Id::Weight);
+            if let Some((weight, _)) = weights_offered(&family, &view.faces).get(index) {
                 model.settings.font.weight = *weight;
             }
         }
         Id::HeadingWeight => {
-            if let Some((weight, _)) = WEIGHTS.get(index) {
+            let family = weight_family(model, Id::HeadingWeight);
+            if let Some((weight, _)) = weights_offered(&family, &view.faces).get(index) {
                 model.settings.font.heading_weight = *weight;
             }
         }
@@ -1539,6 +1617,8 @@ pub struct ChoiceContext {
     pub gpus: Vec<model::GpuAdapter>,
     pub interfaces: Vec<(String, bool)>,
     pub sensor_ids: Vec<String>,
+    /// Every (family, weight) the machine has, for the weight controls.
+    pub faces: Vec<(String, i32)>,
     /// The mounts of the volumes on offer, in the order they are listed.
     pub volumes: Vec<String>,
     /// The counter instances of the disks on offer, in the same order.
@@ -1553,6 +1633,7 @@ impl ChoiceContext {
         ChoiceContext {
             selection: view.selection,
             families: view.families.to_vec(),
+            faces: view.faces.to_vec(),
             family_missing: !view.families.iter().any(|f| *f == current),
             gpus: view.snapshot.gpus.clone(),
             interfaces: view.snapshot.interfaces.clone(),
@@ -1729,6 +1810,7 @@ mod tests {
         /// plus the instance families that carry the real weights.
         instances: Vec<String>,
         lhm: LhmState,
+        faces: Vec<(String, i32)>,
         search: SearchView,
         update: UpdateView,
     }
@@ -1753,6 +1835,17 @@ mod tests {
                     "Segoe UI Variable Text Semibold".into(),
                 ],
                 lhm: LhmState::Idle,
+                faces: vec![
+                    // As GDI enumerates them: a family reports the weights it
+                    // has faces for, and Segoe UI's Light and Semibold are
+                    // families of their own rather than weights of this one.
+                    ("Segoe UI".to_string(), 400),
+                    ("Segoe UI".to_string(), 700),
+                    ("Segoe UI Semibold".to_string(), 600),
+                    ("Segoe UI Variable Text".to_string(), 300),
+                    ("Segoe UI Variable Text".to_string(), 400),
+                    ("Segoe UI Variable Text".to_string(), 600),
+                ],
                 search: SearchView::default(),
                 update: UpdateView::default(),
             }
@@ -1764,6 +1857,7 @@ mod tests {
                 snapshot: &self.snapshot,
                 selection,
                 families: &self.families,
+                faces: &self.faces,
                 instances: &self.instances,
                 pawnio: pawnio::Status::Unknown,
                 lhm: &self.lhm,
@@ -2084,32 +2178,34 @@ mod tests {
             let view = f.view(None);
             let (items, heading) = dropdown_items(&view, Id::HeadingWeight);
             let (_, value) = dropdown_items(&view, Id::Weight);
-            // Segoe UI has real Light and Semibold faces and they are named
-            // plainly. Medium is the one it has no face for, and only that
-            // one says so - this is the labelling under test, and getting it
-            // from the folded family list said "no such face" about weights
-            // the machine has had all along.
+            // Only the weights this family has faces for. Windows knows
+            // which those are - it hands the weight of every face to the
+            // enumeration - and offering the rest invited GDI to smear the
+            // nearest face into a weight nobody drew.
             assert_eq!(items[heading], "Semibold");
             assert_eq!(items[value], "Regular");
             let names: Vec<&str> = items.iter().map(String::as_str).collect();
-            assert_eq!(names[0], "Light");
-            assert_eq!(names[4], "Bold");
-            assert!(names[2].starts_with("Medium \u{2014}"), "{}", names[2]);
+            assert_eq!(names, vec!["Light", "Regular", "Semibold"]);
+            assert!(!names.contains(&"Medium"), "{names:?}");
+            assert!(!names.contains(&"Bold"), "{names:?}");
             let (elements, _) = content(Pane::Appearance, &view, 704.0, &measure);
             let headings = elements.iter().find(|e| e.id == Id::HeadingWeight).expect("headings").rect;
             let values = elements.iter().find(|e| e.id == Id::Weight).expect("values").rect;
             assert_eq!(headings.y, values.y);
             ChoiceContext::capture(&view)
         };
-        // By weight rather than by position: the list gained Light at the
-        // front, and hardcoded indices quietly chose the neighbour instead.
-        let at = |wanted| WEIGHTS.iter().position(|(w, _)| *w == wanted).expect("offered");
-        choose(&mut f.model, &context, Id::HeadingWeight, at(FontWeight::Bold));
-        assert_eq!(f.model.settings.font.heading_weight, FontWeight::Bold);
+        // By weight rather than by position, and against the weights this
+        // family actually offers rather than the five names that exist:
+        // hardcoded indices chose the neighbour the moment the list changed,
+        // and the list is now as long as the family has faces.
+        let offered = weights_offered("Segoe UI Variable Text", &context.faces);
+        let at = |wanted| offered.iter().position(|(w, _)| *w == wanted).expect("offered");
+        choose(&mut f.model, &context, Id::HeadingWeight, at(FontWeight::Light));
+        assert_eq!(f.model.settings.font.heading_weight, FontWeight::Light);
         assert_eq!(f.model.settings.font.weight, FontWeight::Regular);
-        choose(&mut f.model, &context, Id::Weight, at(FontWeight::Light));
-        assert_eq!(f.model.settings.font.weight, FontWeight::Light);
-        assert_eq!(f.model.settings.font.heading_weight, FontWeight::Bold);
+        choose(&mut f.model, &context, Id::Weight, at(FontWeight::Semibold));
+        assert_eq!(f.model.settings.font.weight, FontWeight::Semibold);
+        assert_eq!(f.model.settings.font.heading_weight, FontWeight::Light);
     }
 
     /// About leads with the mark and the version, which is what the pane is

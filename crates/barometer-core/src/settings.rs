@@ -334,6 +334,16 @@ pub struct StripFont {
     /// or removed while Barometer runs, so the only honest check is the one
     /// made when drawing, which falls back to the default face.
     pub family: String,
+    /// The family the labels are drawn in, when it is not the values' family.
+    ///
+    /// None means "whatever the values use", which is the sensible default
+    /// and what every version before this did. It is a family of its own
+    /// rather than only a weight because on Windows a weight often *is* a
+    /// family - "Segoe UI Semibold" is its own, with faces somebody drew -
+    /// and because a heading in a different face from its value is a
+    /// perfectly ordinary piece of typography that the weight control alone
+    /// cannot express.
+    pub heading_family: Option<String>,
     /// The weight of the values - the numbers themselves.
     pub weight: FontWeight,
     /// The weight of the labels above them.
@@ -364,6 +374,7 @@ impl Default for StripFont {
             // The Windows 11 UI face. Segoe UI Variable Text is the small-size
             // optical size, which is what a taskbar readout is.
             family: "Segoe UI Variable Text".to_string(),
+            heading_family: None,
             weight: FontWeight::Regular,
             heading_weight: FontWeight::Semibold,
             max_size_dip: 12.0,

@@ -70,6 +70,80 @@ pub fn current_theme() -> Theme {
 ///
 /// This is the list the font cache resolves against; the picker shows
 /// `families_for_picker` of it.
+/// Every (family, weight) GDI reports, one row per face.
+///
+/// Windows knows exactly which weights a family has - it hands the weight of
+/// each face to the enumeration callback - and this is that answer, kept
+/// instead of thrown away. The Weight control used to offer the same five
+/// names whatever was chosen, so a family with one face listed four weights
+/// it could not draw and GDI quietly smeared the face to fake them.
+pub fn installed_faces() -> Vec<(String, i32)> {
+    let mut found: Vec<(String, u32, i32)> = Vec::new();
+    // SAFETY: as in `installed_families`.
+    unsafe {
+        let dc = GetDC(std::ptr::null_mut());
+        if dc.is_null() {
+            return Vec::new();
+        }
+        let mut wanted: LOGFONTW = std::mem::zeroed();
+        wanted.lfCharSet = DEFAULT_CHARSET;
+        EnumFontFamiliesExW(
+            dc,
+            &wanted,
+            Some(collect_face),
+            &mut found as *mut Vec<(String, u32, i32)> as LPARAM,
+            0,
+        );
+        ReleaseDC(std::ptr::null_mut(), dc);
+    }
+    let mut faces: Vec<(String, i32)> = found
+        .into_iter()
+        .filter(|(name, kind, _)| keep_family(name, *kind))
+        .map(|(name, _, weight)| (name, weight))
+        .collect();
+    faces.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()).then(a.1.cmp(&b.1)));
+    faces.dedup();
+    faces
+}
+
+unsafe extern "system" fn collect_face(
+    logical: *const LOGFONTW,
+    _metrics: *const TEXTMETRICW,
+    kind: u32,
+    lparam: LPARAM,
+) -> i32 {
+    if logical.is_null() || lparam == 0 {
+        return 1;
+    }
+    let found = &mut *(lparam as *mut Vec<(String, u32, i32)>);
+    let name = &(*logical).lfFaceName;
+    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    // Italic faces are the same weights said twice; the readout draws upright.
+    if (*logical).lfItalic == 0 {
+        found.push((String::from_utf16_lossy(&name[..end]), kind, (*logical).lfWeight));
+    }
+    1
+}
+
+/// The weights `family` has faces for, nearest-first against the names the
+/// picker offers.
+///
+/// A family that reports nothing usable - it was not enumerated, or every
+/// face was italic - gets Regular, so the control is never empty.
+pub fn weights_for(family: &str, faces: &[(String, i32)]) -> Vec<i32> {
+    let mut weights: Vec<i32> = faces
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(family))
+        .map(|(_, weight)| *weight)
+        .collect();
+    weights.sort_unstable();
+    weights.dedup();
+    if weights.is_empty() {
+        weights.push(400);
+    }
+    weights
+}
+
 pub fn installed_families() -> Vec<String> {
     let mut found: Vec<(String, u32)> = Vec::new();
     // SAFETY: a screen DC, released; the callback only reads what it is given

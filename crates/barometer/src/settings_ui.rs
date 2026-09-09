@@ -401,6 +401,9 @@ struct WindowState {
     /// Semibold". Asking the folded list whether a weight exists always says
     /// no, because folding is what took those names out of it.
     instances: Vec<String>,
+    /// Every (family, weight) the machine has, so a Weight control can
+    /// offer only the weights the chosen family has faces for.
+    faces: Vec<(String, i32)>,
     /// Whether DWM accepted a Mica backdrop for this window.
     ///
     /// When it did, the client area is all frame and the alpha the painter
@@ -460,6 +463,7 @@ impl WindowState {
         let theme = system::current_theme();
         let fonts = FontCache::new(&installed);
         let families = system::families_for_picker(&installed);
+        let faces = system::installed_faces();
         let instances = installed;
         let selection = model.order.first().copied();
         let pane = take_pane_request(&shared).unwrap_or(Pane::Strip);
@@ -473,6 +477,7 @@ impl WindowState {
             dpi,
             fonts,
             families,
+            faces,
             instances,
             pane,
             selection,
@@ -589,6 +594,7 @@ impl WindowState {
             snapshot: &self.snapshot,
             selection: self.subject(),
             families: &self.families,
+            faces: &self.faces,
             instances: &self.instances,
             pawnio: self.pawnio,
             lhm: &self.lhm,
@@ -641,6 +647,7 @@ impl WindowState {
                 snapshot: &self.snapshot,
                 selection: subject,
                 families: &self.families,
+                faces: &self.faces,
                 pawnio: self.pawnio,
                 lhm: &self.lhm,
                 search: &self.search,
@@ -1525,6 +1532,7 @@ impl WindowState {
                 self.commit();
             }
             Id::Family
+            | Id::HeadingFamily
             | Id::HeadingWeight
             | Id::Weight
             | Id::GpuAdapter
@@ -1742,6 +1750,7 @@ impl WindowState {
                         self.activate(Id::Nav(Pane::ALL[next]));
                     }
                     Id::Family
+                    | Id::HeadingFamily
                     | Id::HeadingWeight
                     | Id::Weight
                     | Id::GpuAdapter

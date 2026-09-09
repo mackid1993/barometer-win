@@ -129,6 +129,7 @@ pub enum Id {
     DiskDevice,
     DiskVolume,
     Family,
+    HeadingFamily,
     /// The weight of the module names on the strip.
     HeadingWeight,
     /// The weight of the numbers under them.
