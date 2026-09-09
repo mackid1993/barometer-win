@@ -894,7 +894,6 @@ fn build_font(
     // which is what a type size means.
     logical.lfHeight = -dip_to_px(size, dpi);
     let weight = if weight == 0 { FW_NORMAL as i32 } else { weight as i32 };
-    logical.lfWeight = weight;
     logical.lfCharSet = DEFAULT_CHARSET;
     logical.lfOutPrecision = OUT_TT_PRECIS;
     logical.lfClipPrecision = CLIP_DEFAULT_PRECIS;
@@ -915,6 +914,13 @@ fn build_font(
         weight,
         installed_families(),
     );
+    // A named instance carries its weight in the face itself - "Segoe UI
+    // Semibold" is its own family, not Segoe UI asked to be bolder - so the
+    // weight is spent once, not twice. Asking that family for 600 as well
+    // invites GDI to embolden a face that is already semibold. TrafficMonitor
+    // writes `font_name = Segoe UI Semibold` with `font_style = 0` for the
+    // same reason, and this is the same request.
+    logical.lfWeight = if family == state.model.font_family { weight } else { FW_NORMAL as i32 };
     let family = wide(&family);
     for (index, unit) in family.iter().take(logical.lfFaceName.len()).enumerate() {
         logical.lfFaceName[index] = *unit;
