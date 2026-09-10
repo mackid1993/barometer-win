@@ -294,14 +294,14 @@ fn sample_readout_in(id: ModuleId, upload_first: bool) -> Readout {
 }
 
 /// The type size and row count the strip would choose for this taskbar.
-pub fn density(snapshot: &Snapshot) -> Density {
-    Density::choose(snapshot.taskbar_height_dip)
+pub fn density(model: &Model, snapshot: &Snapshot) -> Density {
+    Density::choose(snapshot.taskbar_height_dip, model.settings.font.size_dip)
 }
 
 /// The header line over the composer: "3 items · 9 pt text · two rows".
 pub fn summary(model: &Model, snapshot: &Snapshot) -> String {
     let count = model.shown_count();
-    let density = density(snapshot);
+    let density = density(model, snapshot);
     let items = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
     let size = format!("{} pt text", density.text_dip.round());
     let rows = if density.two_rows { "two rows" } else { "one row" };
@@ -342,7 +342,7 @@ pub fn paint(
     canvas.stroke_round(area, super::ui::RADIUS_SURFACE, theme.stroke_card);
     let mut spans = Vec::new();
 
-    let density = density(snapshot);
+    let density = density(model, snapshot);
     let cells = cells(model, snapshot, density.two_rows);
     let font = &model.settings.font;
     let scale = canvas.scale;
@@ -555,6 +555,22 @@ pub fn paint(
     }
     canvas.unclip(clip);
     spans
+}
+
+/// What the Text size slider says under itself: the row count the size
+/// buys on this taskbar, which is the one consequence of the size that is
+/// not obvious from the number.
+pub fn size_caption(model: &Model, snapshot: &Snapshot) -> String {
+    let density = density(model, snapshot);
+    if density.two_rows {
+        "Two rows fit at this size on your taskbar.".to_string()
+    } else {
+        format!(
+            "One row: two rows of {} pt do not fit a {} DIP taskbar. Smaller text brings the labels back.",
+            density.text_dip.round(),
+            snapshot.taskbar_height_dip.round()
+        )
+    }
 }
 
 /// The item under a point in the preview, for the hover backplate.

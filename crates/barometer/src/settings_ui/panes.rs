@@ -29,7 +29,7 @@ use barometer_core::ModuleId;
 
 use super::geometry::Rect;
 use super::model::{
-    self, clamp_gap, clamp_poll, GpuChoice, Model, SensorSource,
+    self, clamp_gap, clamp_poll, clamp_size, GpuChoice, Model, SensorSource,
     Snapshot, StripItem,
 };
 use super::preview;
@@ -1019,6 +1019,17 @@ fn appearance_pane(b: &mut Builder, view: &View) {
             },
         ],
     );
+    let size = view.model.settings.font.size_dip;
+    b.row_slider(
+        Id::Size,
+        "Text size",
+        Some(&preview::size_caption(view.model, view.snapshot)),
+        size,
+        barometer_core::settings::StripFont::MIN_SIZE_DIP,
+        barometer_core::settings::StripFont::MAX_SIZE_DIP,
+        1.0,
+        &format!("{} pt", size.round()),
+    );
     b.card_end();
 
     b.section("Spacing");
@@ -1664,6 +1675,7 @@ impl ChoiceContext {
 /// Applies a slider's new value.
 pub fn slide(model: &mut Model, id: Id, value: f32) {
     match id {
+        Id::Size => model.settings.font.size_dip = clamp_size(value.round()),
         Id::Gap => model.settings.column_gap_dip = clamp_gap(value.round()),
         Id::PollSeconds => model.settings.sensors.poll_seconds = clamp_poll(value.round() as u32),
         Id::RefreshMinutes => {
@@ -2137,6 +2149,10 @@ mod tests {
     #[test]
     fn sliders_clamp_and_round_into_their_settings() {
         let mut f = Fixture::new();
+        slide(&mut f.model, Id::Size, 11.4);
+        assert_eq!(f.model.settings.font.size_dip, 11.0);
+        slide(&mut f.model, Id::Size, 40.0);
+        assert_eq!(f.model.settings.font.size_dip, barometer_core::settings::StripFont::MAX_SIZE_DIP);
         slide(&mut f.model, Id::Gap, 90.0);
         assert_eq!(f.model.settings.column_gap_dip, barometer_core::store::MAX_SPACING_DIP);
         slide(&mut f.model, Id::PollSeconds, 0.0);

@@ -126,6 +126,8 @@ pub enum Id {
     HeadingWeight,
     /// The weight of the numbers under them.
     Weight,
+    /// The size of the text on the strip.
+    Size,
     Gap,
     GpuAdapter,
     PinnedSensor,

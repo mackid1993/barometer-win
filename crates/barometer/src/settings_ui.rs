@@ -1321,7 +1321,7 @@ impl WindowState {
         }
         self.pressed = target;
         match target {
-            Some(id @ (Id::Gap | Id::PollSeconds | Id::RefreshMinutes)) => {
+            Some(id @ (Id::Size | Id::Gap | Id::PollSeconds | Id::RefreshMinutes)) => {
                 self.slider_drag = Some(id);
                 // SAFETY: a live window.
                 unsafe { SetCapture(self.hwnd) };
@@ -1643,7 +1643,7 @@ impl WindowState {
                 self.preview_light = !self.preview_light;
                 self.invalidate();
             }
-            Id::Gap | Id::PollSeconds | Id::RefreshMinutes => {}
+            Id::Size | Id::Gap | Id::PollSeconds | Id::RefreshMinutes => {}
         }
     }
 

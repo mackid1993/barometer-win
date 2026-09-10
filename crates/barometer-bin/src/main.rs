@@ -484,7 +484,7 @@ fn main() {
         Some(bar) => {
             if diagnostic {
                 let font = StripFont::default();
-                let density = Density::choose(bar.height() as f32);
+                let density = Density::choose(bar.height() as f32, font.size_dip);
                 println!(
                     "Taskbar: {:?} edge, {}x{}, supported={}",
                     bar.edge,
@@ -1485,7 +1485,7 @@ The file it could not read has been kept, at:
             let for_settings = settings_window.as_ref().is_some_and(|open| open.is_open());
             let live = snapshot(&modules, height_dip, &settings, for_settings);
 
-            let density = Density::choose(height_dip);
+            let density = Density::choose(height_dip, font.size_dip);
 
             let cells = settings_ui::preview::cells(&model, &live, density.two_rows);
             // Every stack has a panel, registered the first time it is seen

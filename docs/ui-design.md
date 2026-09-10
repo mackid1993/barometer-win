@@ -590,12 +590,14 @@ theme. Headings and values are chosen separately, and only the weights the chose
 for are offered - GDI never refuses a weight, it smears the nearest face, so offering five on a
 single-weight family was offering four lies.
 
-**One size, 9 DIP** (`taskbar::TEXT_DIP`). macOS steps its type from 12 down to 9 as items are added; here
-the strip starts at the bottom of that ladder and stays there, because its width is paid for by the task
-buttons beside it and the shell gives those up a whole button at a time - a readout that grows whenever it
-has fewer items spends that room on nothing anyone asked for. There is no text size setting: a control that
-could only lower an automatic size confused more than it helped. Nothing else steps with the item count
-either; the marks and graphs are sized from the band and the text, not from a ladder.
+**One size, the user's, 9 DIP by default** (`taskbar::TEXT_DIP`, `StripFont::size_dip`). macOS steps its
+type from 12 down to 9 as items are added; here the strip starts at the bottom of that ladder and stays
+wherever the user puts it, because its width is paid for by the task buttons beside it and the shell gives
+those up a whole button at a time - a readout that grows whenever it has fewer items spends that room on
+nothing anyone asked for. The Text size slider (7-14) sets the size itself; an earlier version made it a
+ceiling on an automatic size, which confused more than it helped. Two rows wherever the bar has room for
+two at that size, one row where it does not. Nothing else steps with the item count either; the marks and
+graphs are sized from the band and the text, not from a ladder.
 
 Labels (`CPU`, `MEM`, `NET`, sensor names) are drawn at 82 % alpha of the ink; values at 100 %. That single
 difference is what stops a strip of eight items from being a run-on sentence: the eye lands on values.
@@ -750,7 +752,7 @@ settings window has no quit control, matching Windows conventions.
 - **"One-line vs two-line layout."** Replaced by per-item readout styles (stacked items are two rows; the
   strip itself is always one row). A global two-line switch fights the module model and, on a 48 DIP taskbar,
   every item already gets two rows.
-- **"Font size"** is gone. The strip draws at one size (§9.4).
+- **"Font size"** sets the size itself, 7-14, rather than a ceiling on an automatic one (§9.4).
 - **"Item spacing"** was to be three named steps rather than a slider. It ended up a slider after all, 0 to
   24, because the useful range turned out to be at the bottom of that scale (default 3, §9.6) and named
   steps could not say the difference between 2 and 4.

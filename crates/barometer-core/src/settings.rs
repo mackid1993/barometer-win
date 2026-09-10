@@ -359,6 +359,14 @@ pub struct StripFont {
     /// Only the label row uses it, so a network column showing two rates has
     /// both of them in `weight` - neither is a heading.
     pub heading_weight: FontWeight,
+    /// The size of the text on the strip, in DIPs.
+    ///
+    /// The size itself, not a ceiling on an automatic one - that version was
+    /// taken out because a control that could only ever lower a figure the
+    /// strip had already chosen confused more than it helped. The strip
+    /// keeps two rows wherever the bar has room for two at this size and
+    /// drops to one where it does not; see `taskbar::Density`.
+    pub size_dip: f32,
 }
 
 impl Default for StripFont {
@@ -370,6 +378,7 @@ impl Default for StripFont {
             heading_family: None,
             weight: FontWeight::Regular,
             heading_weight: FontWeight::Semibold,
+            size_dip: crate::taskbar::TEXT_DIP,
         }
     }
 }
@@ -377,6 +386,12 @@ impl Default for StripFont {
 impl StripFont {
     /// The face to fall back to when the chosen family is not installed.
     pub const FALLBACK_FAMILY: &'static str = "Segoe UI";
+
+    /// Below this, tabular digits stop being legible on a taskbar at 100%.
+    pub const MIN_SIZE_DIP: f32 = 7.0;
+    /// Above this even the default-height taskbar has no room for two rows,
+    /// and the small one lost its second row a while ago.
+    pub const MAX_SIZE_DIP: f32 = 14.0;
 }
 
 #[cfg(test)]

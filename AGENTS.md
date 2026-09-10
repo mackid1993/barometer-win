@@ -124,8 +124,8 @@ assumed**, and the strip has to lay out at whatever it gets:
 - Two-row items (label over value) only when the height actually admits two legible rows
   at the current DPI. Otherwise fall back to one row.
 - The Mac app's text-size ladder, which steps type down as more widgets are enabled, is
-  not ported. The strip draws at one size, 9 DIP, and only the row count follows the bar's
-  height; `Density` in `barometer-core/src/taskbar.rs` says why.
+  not ported. The strip draws at one size the user sets, 9 DIP by default, and only the row
+  count follows the bar's height; `Density` in `barometer-core/src/taskbar.rs` says why.
 - Recompute on `ABN_POSCHANGED`, on `WM_DPICHANGED`, and on display changes. Nothing about
   taskbar geometry is stable for the life of the process.
 

@@ -610,6 +610,7 @@ fn encode(settings: &Settings) -> Value {
             "headingFamily": optional(&settings.font.heading_family),
             "weight": settings.font.weight.raw_value(),
             "headingWeight": settings.font.heading_weight.raw_value(),
+            "sizeDip": settings.font.size_dip.clamp(StripFont::MIN_SIZE_DIP, StripFont::MAX_SIZE_DIP),
         },
         "modules": settings.modules.iter().map(|entry| json!({
             "id": entry.id.key(),
@@ -701,6 +702,13 @@ fn decode(document: &Value) -> Settings {
             heading_weight: text(font, "headingWeight")
                 .and_then(|raw| FontWeight::from_raw(&raw))
                 .unwrap_or(defaults.font.heading_weight),
+            // A plain size. The ceiling an earlier version kept under
+            // `maxSizeDip` is deliberately not read: it limited an automatic
+            // size rather than setting one, and carrying a 12 over as the
+            // size would enlarge a strip nobody asked to enlarge.
+            size_dip: number(font, "sizeDip")
+                .map(|dip| (dip as f32).clamp(StripFont::MIN_SIZE_DIP, StripFont::MAX_SIZE_DIP))
+                .unwrap_or(defaults.font.size_dip),
         },
         modules: decode_modules(document.get("modules")),
         column_gap_dip: number(root, "columnGapDip")
@@ -1009,6 +1017,7 @@ mod tests {
                 heading_family: Some("Segoe UI Semibold".into()),
                 weight: FontWeight::Semibold,
                 heading_weight: FontWeight::Bold,
+                size_dip: 10.5,
             },
             modules: vec![
                 ModuleEntry { id: ModuleId::Weather, enabled: true },
@@ -1277,6 +1286,7 @@ mod tests {
         let scratch = Scratch::new("clamping");
         scratch.write(
             r#"{
+              "font": { "sizeDip": 400 },
               "columnGapDip": -5,
               "weather": { "refreshIntervalMinutes": 0 },
               "sensors": { "pollSeconds": 100000 },
@@ -1285,6 +1295,7 @@ mod tests {
         );
 
         let settings = Store::at(scratch.settings()).load().settings;
+        assert_eq!(settings.font.size_dip, StripFont::MAX_SIZE_DIP);
         assert_eq!(settings.column_gap_dip, MIN_SPACING_DIP);
         assert_eq!(settings.weather.refresh_interval_minutes, 5);
         assert_eq!(settings.sensors.poll_seconds, MAX_POLL_SECONDS);

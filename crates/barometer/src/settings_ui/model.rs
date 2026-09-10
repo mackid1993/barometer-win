@@ -546,6 +546,13 @@ pub fn clamp_gap(dip: f32) -> f32 {
     dip.clamp(store::MIN_SPACING_DIP, store::MAX_SPACING_DIP)
 }
 
+pub fn clamp_size(dip: f32) -> f32 {
+    dip.clamp(
+        barometer_core::settings::StripFont::MIN_SIZE_DIP,
+        barometer_core::settings::StripFont::MAX_SIZE_DIP,
+    )
+}
+
 pub fn clamp_poll(seconds: u32) -> u32 {
     seconds.clamp(store::MIN_POLL_SECONDS, store::MAX_POLL_SECONDS)
 }
@@ -853,6 +860,8 @@ mod tests {
     fn clamps_hold_to_the_stores_limits() {
         assert_eq!(clamp_gap(-3.0), store::MIN_SPACING_DIP);
         assert_eq!(clamp_gap(1000.0), store::MAX_SPACING_DIP);
+        assert_eq!(clamp_size(2.0), barometer_core::settings::StripFont::MIN_SIZE_DIP);
+        assert_eq!(clamp_size(40.0), barometer_core::settings::StripFont::MAX_SIZE_DIP);
         assert_eq!(clamp_poll(0), store::MIN_POLL_SECONDS);
         assert_eq!(clamp_poll(999), store::MAX_POLL_SECONDS);
     }

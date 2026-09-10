@@ -94,26 +94,25 @@ pub fn taskbar() -> Option<Taskbar> {
 
 /// How the strip lays itself out: its text size and whether it has two rows.
 ///
-/// The size is one figure and the small one. The Mac app steps its type down
-/// from 12 as widgets are added, and an earlier version of this port did the
-/// same with a user ceiling on top of it. Both were taken out, and that is
-/// the deliberate divergence from the Swift: on a taskbar the readout's
-/// width is paid for by the task buttons beside it, which the shell gives up
-/// a whole button at a time, and a readout that grows whenever it has fewer
-/// items spends that room on nothing anyone asked for. A setting that could
-/// only lower the automatic size confused more than it helped. Nine is the
-/// bottom of the Mac ladder and the smallest size at which two rows stay
-/// legible, so the strip simply lives there.
+/// The size is the user's, one figure for the whole strip, and it starts
+/// small. The Mac app steps its type down from 12 as widgets are added; that
+/// ladder is not ported, and neither is the ceiling an earlier version of
+/// this port put on top of it, which could only ever lower the automatic
+/// size and confused more than it helped. On a taskbar the readout's width
+/// is paid for by the task buttons beside it, which the shell gives up a
+/// whole button at a time, so the size is a plain choice with a small
+/// default rather than something that grows whenever the strip has fewer
+/// items. Nine is the bottom of the Mac ladder and the smallest size at
+/// which two rows stay legible.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Density {
-    /// Text size in DIPs. Always `TEXT_DIP`; carried so the callers that lay
-    /// out from a `Density` have one place to read it.
+    /// Text size in DIPs.
     pub text_dip: f32,
     /// Whether there is room for a label above a value.
     pub two_rows: bool,
 }
 
-/// The size the strip draws at, in DIPs. See [`Density`].
+/// The size a fresh install draws at, in DIPs. See [`Density`].
 pub const TEXT_DIP: f32 = 9.0;
 
 /// The largest a single row of type may be, as a share of the bar's height,
@@ -127,21 +126,26 @@ pub const TEXT_DIP: f32 = 9.0;
 const TWO_ROW_FRACTION: f32 = 0.31;
 
 impl Density {
-    /// Chooses the row count for a bar height.
+    /// Chooses the row count for a bar height at the size the user set.
     ///
-    /// Two rows whenever the bar has room for two lines of `TEXT_DIP`, which
-    /// every height Windows 11 offers does, the 32dip small taskbar included.
-    /// One row is the fallback for a bar shorter than any the shell draws
-    /// today, so that a future height gets one legible row rather than two
-    /// rows nobody can read.
-    pub fn choose(height_dip: f32) -> Density {
-        Density { text_dip: TEXT_DIP, two_rows: height_dip * TWO_ROW_FRACTION >= TEXT_DIP }
+    /// Two rows whenever the bar has room for two lines at that size. At the
+    /// default size every height Windows 11 offers has, the 32dip small
+    /// taskbar included; a larger size drops to one row where two no longer
+    /// fit rather than shrinking back, because the size was the user's
+    /// choice and a row nobody asked for is the lesser thing to lose.
+    pub fn choose(height_dip: f32, text_dip: f32) -> Density {
+        let text_dip = text_dip.clamp(
+            crate::settings::StripFont::MIN_SIZE_DIP,
+            crate::settings::StripFont::MAX_SIZE_DIP,
+        );
+        Density { text_dip, two_rows: height_dip * TWO_ROW_FRACTION >= text_dip }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::StripFont;
 
     #[test]
     fn side_edges_are_refused() {
@@ -152,17 +156,24 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_draws_at_one_size_whatever_the_bar() {
+    fn the_size_is_the_users_whatever_the_bar() {
         for height in [24.0, 32.0, 48.0, 64.0] {
-            assert_eq!(Density::choose(height).text_dip, TEXT_DIP);
+            assert_eq!(Density::choose(height, TEXT_DIP).text_dip, TEXT_DIP);
+            assert_eq!(Density::choose(height, 12.0).text_dip, 12.0);
         }
     }
 
     #[test]
-    fn every_taskbar_windows_offers_gets_two_rows() {
+    fn an_absurd_size_is_held_to_the_legible_range() {
+        assert_eq!(Density::choose(48.0, 1.0).text_dip, StripFont::MIN_SIZE_DIP);
+        assert_eq!(Density::choose(48.0, 400.0).text_dip, StripFont::MAX_SIZE_DIP);
+    }
+
+    #[test]
+    fn every_taskbar_windows_offers_gets_two_rows_at_the_default_size() {
         // 32dip is the small taskbar 26H2 brought back, 48 the default.
-        assert!(Density::choose(32.0).two_rows);
-        assert!(Density::choose(48.0).two_rows);
+        assert!(Density::choose(32.0, TEXT_DIP).two_rows);
+        assert!(Density::choose(48.0, TEXT_DIP).two_rows);
         // Two lines plus their leading have to leave the small bar some
         // margin, or the readout looks pasted over the taskbar instead of set
         // into it.
@@ -170,8 +181,17 @@ mod tests {
     }
 
     #[test]
+    fn a_size_two_rows_cannot_fit_drops_to_one_rather_than_shrinking() {
+        let d = Density::choose(32.0, 12.0);
+        assert!(!d.two_rows);
+        assert_eq!(d.text_dip, 12.0);
+        // The default bar still has the room at that size.
+        assert!(Density::choose(48.0, 12.0).two_rows);
+    }
+
+    #[test]
     fn a_bar_too_short_for_two_rows_drops_to_one_rather_than_shrinking_them() {
-        let d = Density::choose(24.0);
+        let d = Density::choose(24.0, TEXT_DIP);
         assert!(!d.two_rows);
         assert_eq!(d.text_dip, TEXT_DIP);
     }
