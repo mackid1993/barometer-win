@@ -503,18 +503,32 @@ impl CpuFlyout {
         }
         b.card_end(card);
 
-        let card = b.card_begin(None);
-        b.section_label("System");
-        // Above Uptime, as the Swift's System card puts it. The three are
+        // Above Uptime, as the Swift's System card puts it. The figures are
         // written by the type that holds them, so the panel and anything
-        // else that shows them agree.
+        // else that shows them agree. A figure that has not arrived is left
+        // out, and a card with none of them is left out with it: a column
+        // of dashes says nothing about the machine.
+        let mut rows: Vec<(&str, String)> = Vec::new();
         if let Some(load) = s.load_average {
-            b.metric_row(None, "Load average", &load.describe(), Ink::Secondary);
+            rows.push(("Load average", load.describe()));
         }
-        b.metric_row(None, "Uptime", &uptime(s.uptime_secs), Ink::Secondary);
-        b.metric_row(None, "Processes", &processes_text(s), Ink::Secondary);
-        b.metric_row(None, "Handles", &count(s.handles), Ink::Secondary);
-        b.card_end(card);
+        if s.uptime_secs.is_some() {
+            rows.push(("Uptime", uptime(s.uptime_secs)));
+        }
+        if s.processes.is_some() || s.threads.is_some() {
+            rows.push(("Processes", processes_text(s)));
+        }
+        if s.handles.is_some() {
+            rows.push(("Handles", count(s.handles)));
+        }
+        if !rows.is_empty() {
+            let card = b.card_begin(None);
+            b.section_label("System");
+            for (label, value) in &rows {
+                b.metric_row(None, label, value, Ink::Secondary);
+            }
+            b.card_end(card);
+        }
 
         if self.shown_processes().next().is_some() {
             let card = b.card_begin(None);

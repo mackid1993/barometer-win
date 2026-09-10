@@ -942,7 +942,38 @@ mod tests {
     #[ignore]
     fn render_the_panel_to_bitmaps() {
         let mut snapshot = sampled(RateUnit::Bytes, false);
-        snapshot.connection = Connection { ipv4: vec!["192.168.1.20".into()], ..Default::default() };
+        for n in 0..40u32 {
+            let swell = ((n as f64) * 0.4).sin().abs();
+            snapshot.observe(Some((0.3e6 + 2.2e6 * swell, 0.1e6 + 0.4e6 * (1.0 - swell))));
+        }
+        snapshot.totals = Some((48_300_000_000, 6_100_000_000));
+        snapshot.connection = Connection {
+            interface: Some("Wi-Fi".into()),
+            is_primary: true,
+            ipv4: vec!["192.168.1.20".into()],
+            ipv6: vec!["fe80::1c2a:9b3f:44d1:7e02".into()],
+            router: Some("192.168.1.1".into()),
+            dns: vec!["1.1.1.1".into(), "1.0.0.1".into()],
+            public_ipv4: Some("203.0.113.42".into()),
+            shows_public: true,
+            ..Default::default()
+        };
+        snapshot.wifi = Some(Wifi {
+            ssid: Some("Brustein".into()),
+            rssi: Some(-52),
+            noise: Some(-92),
+            channel: Some(44),
+            band: Some("5 GHz".into()),
+            transmit_mbps: Some(866.7),
+            security: Some("WPA3".into()),
+            ..Default::default()
+        });
+        snapshot.shows_processes = true;
+        snapshot.processes = Some(vec![
+            Process { pid: 4100, name: "Spotify".into(), down: 1.4e6, up: 12_000.0, ..Default::default() },
+            Process { pid: 2210, name: "Beeper".into(), down: 84_000.0, up: 31_000.0, ..Default::default() },
+            Process { pid: 980, name: "Dropbox".into(), down: 12_000.0, up: 260_000.0, ..Default::default() },
+        ]);
         let slot = Arc::new(Mutex::new(snapshot));
         let mut content = NetworkContent::new(Arc::clone(&slot));
         content.tick();

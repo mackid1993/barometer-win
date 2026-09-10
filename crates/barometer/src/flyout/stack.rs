@@ -628,10 +628,27 @@ mod tests {
     #[test]
     #[ignore]
     fn render_the_panel_to_bitmaps() {
-        let (mut content, _feed) = stack(
-            vec![entry(StackMetric::CpuTotal), entry(StackMetric::GpuUtilization), entry(StackMetric::NetworkUpload)],
-            vec![],
-        );
+        let slots = ModuleSlots {
+            cpu: Arc::new(Mutex::new(CpuSnapshot { total: Some(0.42), user: Some(0.38), system: Some(0.04), ..Default::default() })),
+            gpu: Arc::new(Mutex::new(GpuSnapshot { name: Some("NVIDIA GeForce RTX 4080".into()), load: Some(0.63), ..Default::default() })),
+            memory: Arc::new(Mutex::new(MemorySnapshot::default())),
+            disks: Arc::new(Mutex::new(DisksSnapshot::default())),
+            network: Arc::new(Mutex::new({
+                let mut network = NetworkSnapshot::default();
+                network.observe(Some((1.2e6, 96_000.0)));
+                network
+            })),
+            sensors: Arc::new(Mutex::new(SensorsSnapshot::default())),
+            weather: Arc::new(Mutex::new(weather::Snapshot::default())),
+        };
+        let feed = Arc::new(Mutex::new(StackSnapshot {
+            id: 3,
+            name: "Desk".into(),
+            entries: vec![entry(StackMetric::CpuTotal), entry(StackMetric::GpuUtilization), entry(StackMetric::NetworkUpload)],
+            sensors: vec![],
+        }));
+        let mut content = StackContent::new(3, Arc::clone(&feed), slots);
+        content.opened();
         content.tick();
         for light in [false, true] {
             crate::flyout::render::to_bitmap(&mut content, "stack", light, 0);

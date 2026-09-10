@@ -233,14 +233,23 @@ impl GpuFlyout {
 
         // The Swift's three tiles sit in one row; the vocabulary's grid is
         // two across, so the third wraps, as the Wi-Fi tiles do beside it.
-        let card = b.card_begin(None);
-        b.section_label("Hardware");
-        b.stat_tiles(vec![
-            tile("Frequency", frequency(s.frequency_mhz)),
-            tile("Power", power(s.power_watts)),
-            tile("Temperature", temperature(s.temperature_c, s.unit)),
-        ]);
-        b.card_end(card);
+        // Only the figures the sensor source has given; a tile with a dash
+        // in it says nothing about the card, and without a sensor source
+        // all three are absent and the whole card with them.
+        let tiles: Vec<Tile> = [
+            s.frequency_mhz.map(|mhz| tile("Frequency", frequency(Some(mhz)))),
+            s.power_watts.map(|watts| tile("Power", power(Some(watts)))),
+            s.temperature_c.map(|celsius| tile("Temperature", temperature(Some(celsius), s.unit))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !tiles.is_empty() {
+            let card = b.card_begin(None);
+            b.section_label("Hardware");
+            b.stat_tiles(tiles);
+            b.card_end(card);
+        }
     }
 
     /// The adapter's name under the title, or why there is not one.
@@ -613,10 +622,11 @@ mod tests {
         let flyout = GpuFlyout::new(GpuSnapshot::default());
         assert_eq!(flyout.subtitle(), "Waiting for the first sample");
         assert_eq!(GpuFlyout::new(full()).subtitle(), "NVIDIA GeForce RTX 4080");
-        // The cards stand regardless, dashed.
+        // The history, utilization and memory cards stand; the hardware card
+        // waits for a sensor source rather than standing full of dashes.
         let elements = layout(&flyout);
-        assert_eq!(cards(&elements).len(), 4);
-        assert!(texts(&elements).iter().filter(|t| **t == DASH).count() >= 4);
+        assert_eq!(cards(&elements).len(), 3);
+        assert!(!texts(&elements).contains(&"Hardware"));
     }
 
     #[test]

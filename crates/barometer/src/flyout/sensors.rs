@@ -819,7 +819,18 @@ mod tests {
     #[ignore]
     fn render_the_panel_to_bitmaps() {
         let slot = Arc::new(Mutex::new(SensorsSnapshot::default()));
-        slot.lock().unwrap().observe(&machine(), None);
+        for n in 0..30u32 {
+            // Readings that move, so the sparklines have a shape to show.
+            let drift = ((n as f64) * 0.5).sin() * 4.0;
+            let readings: Vec<Sensor> = machine()
+                .into_iter()
+                .map(|mut sensor| {
+                    sensor.value = sensor.value.map(|value| value + drift);
+                    sensor
+                })
+                .collect();
+            slot.lock().unwrap().observe(&readings, None);
+        }
         let mut content = SensorsContent::new(Arc::clone(&slot));
         content.tick();
         for light in [false, true] {

@@ -359,12 +359,17 @@ impl MemoryFlyout {
         let graph_accent = Accent { primary: level.color(accent), secondary: accent.secondary };
         b.graph(72.0, history_graph(&s.history, timeline_span(&s.history), graph_accent));
         b.gap(8.0);
-        b.metric_row(None, "Committed", &of(s.committed, s.commit_limit), Ink::Secondary);
-        if s.page_file_total.is_some() {
-            b.metric_row(None, "Page file", &of(s.page_file_used, s.page_file_total), Ink::Secondary);
+        // Rows the kernel has answered; a row that would print a dash is
+        // left out rather than drawn, as every panel now does.
+        let rows = [
+            ("Committed", of(s.committed, s.commit_limit)),
+            ("Page file", of(s.page_file_used, s.page_file_total)),
+            ("Paged pool", bytes(s.paged_pool)),
+            ("Non-paged pool", bytes(s.nonpaged_pool)),
+        ];
+        for (label, value) in rows.iter().filter(|(_, value)| value != DASH) {
+            b.metric_row(None, label, value, Ink::Secondary);
         }
-        b.metric_row(None, "Paged pool", &bytes(s.paged_pool), Ink::Secondary);
-        b.metric_row(None, "Non-paged pool", &bytes(s.nonpaged_pool), Ink::Secondary);
         b.card_end(card);
 
         if self.shown_processes().next().is_some() {

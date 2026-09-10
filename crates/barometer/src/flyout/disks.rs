@@ -407,8 +407,17 @@ fn volume_row(b: &mut Builder, volume: &Volume, accent: Accent) {
         },
     );
 
+    // The share is already printed at the top right; under the bar the two
+    // captions are the amounts, used on the left and free on the right, so
+    // the row says three different things rather than one thing twice.
     let captions = Rect::new(plate.x + pad, bar.bottom() + 5.0, plate.w - 2.0 * pad, 16.0);
-    b.text(captions, &format!("{used} used"), Style::Caption, Ink::Secondary, Align::Left);
+    b.text(
+        captions,
+        &format!("{} used", format::bytes(volume.total.saturating_sub(volume.available))),
+        Style::Caption,
+        Ink::Secondary,
+        Align::Left,
+    );
     b.text(
         captions,
         &format!("{} free", format::bytes(volume.available)),
@@ -419,26 +428,30 @@ fn volume_row(b: &mut Builder, volume: &Volume, accent: Accent) {
     b.advance(VOLUME_ROW_H);
 }
 
-/// One physical disk: its model with the system's name in a chip, then read,
-/// write and operations per second.
+/// One physical disk: its model with the system's name for it at the end
+/// of the line, then read, write and operations per second.
+///
+/// The name was a chip, and a chip with a dot in it reads as a count or a
+/// state everywhere else on the panels; "Disk 0" is neither, so it is set
+/// as a caption.
 fn device_block(b: &mut Builder, device: &Device, accent: Accent) {
     let line = Rect::new(b.inner_x(), b.y(), b.inner_w(), 20.0);
-    let chip_w = b.text_width(&device.id, Style::CaptionStrong) + 24.0;
+    let id_w = b.text_width(&device.id, Style::Caption) + 4.0;
     b.text(
-        Rect::new(line.x, line.y, (line.w - chip_w - 8.0).max(24.0), line.h),
+        Rect::new(line.x, line.y, (line.w - id_w - 8.0).max(24.0), line.h),
         &device.model,
         Style::BodyStrong,
         Ink::Primary,
         Align::Left,
     );
-    b.chip_at(line, &device.id, accent.primary, None);
+    b.text(Rect::new(line.right() - id_w, line.y, id_w, line.h), &device.id, Style::Caption, Ink::Secondary, Align::Right);
     b.advance(20.0 + 2.0);
     b.metric_row(Some(glyph::DOWN), "Read", &format::rate(device.read), Ink::Custom(accent.primary));
     b.metric_row(Some(glyph::UP), "Write", &format::rate(device.write), Ink::Custom(accent.secondary));
     b.metric_row(
         Some(glyph::REFRESH),
         "Operations",
-        &format!("{:.1} read \u{00B7} {:.1} write /s", device.read_ops, device.write_ops),
+        &format!("{:.0} reads/s \u{00B7} {:.0} writes/s", device.read_ops, device.write_ops),
         Ink::Custom(accent.primary),
     );
 }
@@ -603,7 +616,7 @@ mod tests {
         assert!(matches!(&headline.kind, Kind::Text { text, .. } if text == "45%"));
         // Every volume carries its mount under the name, labeled or not.
         assert!(texts.contains(&"D:"));
-        assert!(texts.contains(&"25% used"));
+        assert!(texts.contains(&"500 B used"));
     }
 
     #[test]
@@ -659,8 +672,9 @@ mod tests {
         let texts = texts(&elements);
         assert!(texts.contains(&"Physical disks"));
         assert!(texts.contains(&"Samsung SSD 990 PRO 2TB"));
-        assert!(texts.contains(&"12.5 read \u{00B7} 3.0 write /s"));
-        assert!(elements.iter().any(|e| matches!(&e.kind, Kind::Chip { text, .. } if text == "Disk 0")));
+        assert!(texts.contains(&"12 reads/s \u{00B7} 3 writes/s"));
+        assert!(texts.contains(&"Disk 0"));
+        assert!(!elements.iter().any(|e| matches!(&e.kind, Kind::Chip { text, .. } if text == "Disk 0")));
     }
 
     #[test]
@@ -718,7 +732,21 @@ mod tests {
     #[test]
     #[ignore]
     fn render_the_panel_to_bitmaps() {
-        let slot = Arc::new(Mutex::new(sampled()));
+        let mut snapshot = DisksSnapshot::default();
+        for n in 0..40u32 {
+            let swell = ((n as f64) * 0.35).sin().abs();
+            snapshot.observe(Some((4.0e6 + 9.0e6 * swell, 1.0e6 + 2.5e6 * (1.0 - swell))));
+        }
+        snapshot.volumes = vec![
+            volume("Windows", "C:", 1_000_000_000_000, 318_000_000_000),
+            volume("Data", "D:", 2_000_000_000_000, 1_450_000_000_000),
+            Volume { name: "Backup".into(), mount: "E:".into(), total: 4_000_000_000_000, available: 210_000_000_000, removable: true },
+        ];
+        snapshot.devices = vec![
+            Device { model: "Samsung SSD 990 PRO 2TB".into(), id: "0".into(), read: 12.4e6, write: 3.1e6, read_ops: 140.0, write_ops: 38.0, ..Default::default() },
+            Device { model: "WD Red Plus 4TB".into(), id: "1".into(), read: 0.0, write: 0.0, read_ops: 0.0, write_ops: 0.0, ..Default::default() },
+        ];
+        let slot = Arc::new(Mutex::new(snapshot));
         let mut content = DisksContent::new(Arc::clone(&slot));
         content.tick();
         for light in [false, true] {
