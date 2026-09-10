@@ -23,6 +23,7 @@
 // remove the library while the strip was running, and the settings window can
 // be opened with `--settings` on its own.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -170,11 +171,22 @@ pub(crate) fn wait_while_held(how_long: Duration) {
     }
 }
 
-/// Sleeps between reads, waking early if somebody wants the library.
+/// Bumped by `wake`, so a sleeper can tell a nudge meant for it from the
+/// notification a hold or a close sends.
+///
+/// Without it `wake` did nothing at all: `rest` woke, found no holders and
+/// no deadline reached, and went straight back to sleep. Shutdown waited out
+/// the whole poll interval it was documented not to, and there was no way to
+/// bring a worker resting on the idle cadence back to the user's.
+static NUDGE: AtomicU64 = AtomicU64::new(0);
+
+/// Sleeps between reads, waking early if somebody wants the library or has
+/// asked for a reading now.
 pub(crate) fn rest(how_long: Duration) {
+    let since = NUDGE.load(Ordering::Acquire);
     let mut state = lock();
     let deadline = Instant::now() + how_long;
-    while state.holders == 0 {
+    while state.holders == 0 && NUDGE.load(Ordering::Acquire) == since {
         let now = Instant::now();
         if now >= deadline {
             break;
@@ -187,8 +199,11 @@ pub(crate) fn rest(how_long: Duration) {
     }
 }
 
-/// Wakes anything sleeping in `rest`, so shutdown does not wait out a poll.
+/// Wakes anything sleeping in `rest`: at shutdown, so the process does not
+/// wait out a poll, and when something that shows a reading has just
+/// appeared, so the first one is not an idle interval away.
 pub(crate) fn wake() {
+    NUDGE.fetch_add(1, Ordering::AcqRel);
     LIBRARY.changed.notify_all();
 }
 

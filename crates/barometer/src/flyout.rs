@@ -246,6 +246,18 @@ pub(crate) struct Request {
 
 /// What the two threads share.
 pub(crate) struct Shared {
+    /// Whether a `WM_APP_CHANGED` is already on the panel's queue.
+    ///
+    /// Every feed publishes on the same tick - seven module feeds and one
+    /// per stack - and each of them used to post its own. The panel then
+    /// ran the handler eight times a second, and the handler asks the
+    /// showing content whether anything changed, which for the processor
+    /// is a whole-snapshot comparison including its history: at the 24h
+    /// range, eight passes over 86,400 samples a second to answer a
+    /// question one pass answers. Cleared by the handler before it runs,
+    /// so a publish that lands during it posts again rather than being
+    /// swallowed.
+    pub changed_pending: AtomicBool,
     /// The longest history span the open panel wants, in seconds, or zero
     /// while nothing is open. Written by the panel's thread whenever it
     /// lays a page out; read by the strip's tick to decide how much of
@@ -271,13 +283,17 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn post(&self, message: u32) {
+    /// Whether there was a window to post to. See `Wake::notify`, which is
+    /// the only caller that has to know.
+    fn post(&self, message: u32) -> bool {
         let hwnd = self.hwnd.load(Ordering::Acquire);
-        if hwnd != 0 {
-            // SAFETY: a handle the panel thread published; posting to a
-            // window that has since gone is harmless.
-            unsafe { PostMessageW(hwnd as HWND, message, 0, 0) };
+        if hwnd == 0 {
+            return false;
         }
+        // SAFETY: a handle the panel thread published; posting to a window
+        // that has since gone is harmless.
+        unsafe { PostMessageW(hwnd as HWND, message, 0, 0) };
+        true
     }
 }
 
@@ -299,7 +315,16 @@ pub struct Wake {
 
 impl Wake {
     pub fn notify(&self) {
-        self.shared.post(WM_APP_CHANGED);
+        // One message however many feeds published; see `changed_pending`.
+        if self.shared.changed_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if !self.shared.post(WM_APP_CHANGED) {
+            // Nothing took it, so nothing will clear the flag either, and
+            // every later publish would be swallowed for the life of the
+            // process. Put it back.
+            self.shared.changed_pending.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -350,6 +375,7 @@ impl Default for Flyout {
 impl Flyout {
     pub fn new() -> Flyout {
         let shared = Arc::new(Shared {
+            changed_pending: AtomicBool::new(false),
             history_span: AtomicI64::new(0),
             hwnd: AtomicIsize::new(0),
             open: AtomicBool::new(false),

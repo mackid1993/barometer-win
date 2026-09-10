@@ -52,6 +52,68 @@ const POLL: Duration = Duration::from_secs(2);
 const FIRST_RETRY: Duration = POLL;
 const LONGEST_RETRY: Duration = Duration::from_secs(60);
 
+/// How often the helper is asked while nothing can show what it says.
+///
+/// Not stopped, and that is the trade. One read walks every device on the
+/// machine, so asking twice a second for a temperature nobody has put on
+/// the strip is the plain waste; but a helper that has stopped reading is
+/// a pin picker with nothing in it and a Sensors pane that cannot say
+/// whether the source is alive. A minute keeps both honest, keeps the
+/// process warm, and costs a walk an hour instead of eighteen hundred.
+///
+/// Nothing waits out a minute to see a reading: `SensorsModule::shown`
+/// wakes the worker the moment something that can show one appears.
+const IDLE_POLL: Duration = Duration::from_secs(60);
+
+/// What, if anything, could show a reading from the sensor source.
+///
+/// Assembled by the strip's tick, which is the only place that knows all
+/// three, and kept as a value so the decision it feeds is a function of
+/// its inputs and can be tested as one.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SensorDemand {
+    /// A Sensors column on the strip, or a stack carrying a reading only
+    /// the source has - a sensor, or the graphics power or temperature,
+    /// which Windows' engine counters do not carry.
+    pub on_the_strip: bool,
+    /// A panel that draws sensor readings is open.
+    pub panel_open: bool,
+    /// The settings window is on screen, where the pin picker lists every
+    /// sensor the machine reports.
+    pub settings_visible: bool,
+}
+
+impl SensorDemand {
+    /// Whether anything at all is waiting on a reading.
+    pub fn any(&self) -> bool {
+        self.on_the_strip || self.panel_open || self.settings_visible
+    }
+
+    /// How long the worker should wait before asking again.
+    pub fn interval(&self, poll_seconds: u32) -> Duration {
+        interval_for(self.any(), poll_seconds)
+    }
+}
+
+/// How long to wait before asking again, given whether anything is waiting on
+/// the answer.
+///
+/// The user's interval while somebody is looking, the idle one while nobody
+/// is. `poll_seconds` is clamped the way the settings pane clamps it, so a
+/// stored value from a future build cannot make this a busy loop or an hour.
+///
+/// Taken as one bool because that is all the worker is told: which of the
+/// three questions in `SensorDemand` said yes is the strip's business and
+/// changes nothing over here.
+pub fn interval_for(waiting: bool, poll_seconds: u32) -> Duration {
+    if !waiting {
+        return IDLE_POLL;
+    }
+    let seconds =
+        poll_seconds.clamp(crate::store::MIN_POLL_SECONDS, crate::store::MAX_POLL_SECONDS);
+    Duration::from_secs(u64::from(seconds.max(1)))
+}
+
 /// Opens the helper against a library directory, or says why it could not.
 ///
 /// A closure rather than a call to `HelperProvider::spawn` so this file does
@@ -91,6 +153,8 @@ pub struct SensorsModule {
     /// worker rather than passed at spawn, because it is a setting and
     /// settings change while the worker is running.
     poll: Arc<AtomicU32>,
+    /// Whether anything can show a reading right now. See `SensorDemand`.
+    demand: Arc<AtomicBool>,
     /// The supervising thread, kept only so a test can wait for it.
     ///
     /// Never joined in `Drop` - see the note there - but a test that does not
@@ -114,11 +178,15 @@ impl SensorsModule {
         let stop = Arc::new(AtomicBool::new(false));
 
         let poll = Arc::new(AtomicU32::new(POLL.as_secs() as u32));
+        // True until the strip says otherwise, so a build or a test that
+        // never calls `shown` behaves exactly as it did before.
+        let demand = Arc::new(AtomicBool::new(true));
         let worker = thread::spawn({
             let shared = Arc::clone(&shared);
             let stop = Arc::clone(&stop);
             let poll = Arc::clone(&poll);
-            move || supervise(open, locate, &shared, &stop, &poll)
+            let demand = Arc::clone(&demand);
+            move || supervise(open, locate, &shared, &stop, &poll, &demand)
         });
 
         SensorsModule {
@@ -128,6 +196,7 @@ impl SensorsModule {
             unit: TemperatureUnit::Celsius,
             pinned: None,
             poll,
+            demand,
             worker: Some(worker),
         }
     }
@@ -164,6 +233,7 @@ impl SensorsModule {
             unit: TemperatureUnit::Celsius,
             pinned: None,
             poll: Arc::new(AtomicU32::new(POLL.as_secs() as u32)),
+            demand: Arc::new(AtomicBool::new(false)),
             worker: None,
         }
     }
@@ -184,6 +254,7 @@ fn supervise(
     shared: &Arc<Mutex<Shared>>,
     stop: &AtomicBool,
     poll: &AtomicU32,
+    demand: &AtomicBool,
 ) {
     // Publishing to two places, and they are not the same place. `shared` is
     // the snapshot the strip samples from; `health` is what the settings window
@@ -302,10 +373,15 @@ fn supervise(
             }
         }
 
-        // Re-read every pass: the Sensors pane's slider moves this while the
-        // worker is running, and a slider that only takes effect on restart
-        // is a slider that does nothing as far as anybody can tell.
-        library::rest(Duration::from_secs(u64::from(poll.load(Ordering::Relaxed).max(1))));
+        // Both re-read every pass: the Sensors pane's slider moves the
+        // interval while the worker is running, and a slider that only takes
+        // effect on restart is a slider that does nothing as far as anybody
+        // can tell; the demand changes whenever a panel opens or a column is
+        // switched on. `rest` returns early when either does.
+        library::rest(interval_for(
+            demand.load(Ordering::Relaxed),
+            poll.load(Ordering::Relaxed),
+        ));
     }
 
     // Dropping the provider is what stops the helper process; saying so is
@@ -353,6 +429,17 @@ impl Module for SensorsModule {
 
     fn sensor_error(&self) -> Option<SensorError> {
         self.shared.lock().ok().and_then(|shared| shared.error.clone())
+    }
+
+    /// Tells the worker whether anything can show a reading.
+    ///
+    /// Turning it on wakes the worker rather than leaving it to notice on
+    /// its next pass, which is the difference between a Sensors panel that
+    /// fills in as it opens and one that shows dashes for up to a minute.
+    fn shown(&mut self, shown: bool) {
+        if !self.demand.swap(shown, Ordering::Release) && shown {
+            library::wake();
+        }
     }
 
     fn configure(&mut self, settings: &crate::store::Settings) {
@@ -448,6 +535,47 @@ impl Module for SensorsModule {
 
     fn readout(&self) -> Readout {
         self.readout.clone()
+    }
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::*;
+
+    #[test]
+    fn the_helper_is_asked_at_the_users_rate_only_while_something_can_show_what_it_says() {
+        let nobody = SensorDemand::default();
+        assert!(!nobody.any());
+        // Slowed, never stopped: a picker with nothing in it and a pane that
+        // cannot say whether the source is alive would be the worse trade.
+        assert_eq!(nobody.interval(2), IDLE_POLL);
+        assert_eq!(nobody.interval(60), IDLE_POLL);
+
+        // Any one of the three is enough, and each of them is somebody looking.
+        for demand in [
+            SensorDemand { on_the_strip: true, ..Default::default() },
+            SensorDemand { panel_open: true, ..Default::default() },
+            SensorDemand { settings_visible: true, ..Default::default() },
+        ] {
+            assert!(demand.any());
+            assert_eq!(demand.interval(2), Duration::from_secs(2), "the user's interval, unchanged");
+        }
+    }
+
+    #[test]
+    fn a_stored_interval_from_outside_the_sliders_range_is_brought_back_into_it() {
+        let looking = SensorDemand { on_the_strip: true, ..Default::default() };
+        // Zero would be a busy loop against another process, and an hour would
+        // be a strip whose temperature is an hour old while somebody watches
+        // it. The pane clamps what it writes; this clamps what it reads.
+        assert_eq!(looking.interval(0), Duration::from_secs(crate::store::MIN_POLL_SECONDS.into()));
+        assert_eq!(
+            looking.interval(u32::MAX),
+            Duration::from_secs(crate::store::MAX_POLL_SECONDS.into())
+        );
+        // And the idle cadence is longer than anything the slider can ask for,
+        // or switching everything off would speed the helper up.
+        assert!(IDLE_POLL >= looking.interval(crate::store::MAX_POLL_SECONDS));
     }
 }
 

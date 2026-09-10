@@ -744,6 +744,9 @@ impl Panel {
     }
 
     fn on_changed(&mut self) {
+        // Cleared first, so a feed publishing while this runs posts a fresh
+        // message instead of being folded into one already being handled.
+        self.shared.changed_pending.store(false, Ordering::Release);
         self.adopt_pending();
         if !self.open {
             return;
@@ -761,6 +764,11 @@ impl Panel {
             return;
         }
         let Some(index) = self.active else { return };
+        // A process row keeps its icon handle in the laid-out element and
+        // draws from it on every repaint, so the only moment at which an
+        // icon can be destroyed is the one before a new page replaces the
+        // page holding it.
+        super::appicon::begin_pass();
         let scale = self.scale();
         let accent = self.contents[index].accent();
         let now_unix = SystemTime::now()

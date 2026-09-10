@@ -223,6 +223,17 @@ pub trait Module: Send {
     /// asking "is this the sensors one" from outside would mean carrying `Any`
     /// through the whole list to answer a question one module can answer for
     /// itself.
+    /// Whether anything on screen can show what this module reads.
+    ///
+    /// Only the sensors module acts on it, and only because its reading
+    /// costs a walk of every device on the machine in another process. A
+    /// module whose sample is a handful of syscalls has nothing to gain by
+    /// skipping it and a stale counter to lose, so this is not a general
+    /// invitation to stop sampling.
+    fn shown(&mut self, shown: bool) {
+        let _ = shown;
+    }
+
     fn sensors(&self) -> Vec<crate::sensors::Sensor> {
         Vec::new()
     }

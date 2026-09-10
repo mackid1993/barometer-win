@@ -1571,6 +1571,29 @@ The file it could not read has been kept, at:
             // ticks have nobody to hand it to.
             let with_sensors =
                 for_settings || flyout.is_open() || settings.stacks.needs_the_sensor_list();
+            // And the reading behind it is the most expensive thing Barometer
+            // does: one pass of the helper walks every device on the machine.
+            // A stack's panel counts whether or not the reading showing is a
+            // sensor's, because its tabs switch without the strip hearing about
+            // it and a tab that had to wait for a reading would be the one
+            // thing this must not cost.
+            let demand = barometer_core::modules::SensorDemand {
+                on_the_strip: wants_temperatures(&settings)
+                    || settings.stacks.needs_the_sensor_list(),
+                panel_open: matches!(
+                    flyout.open_item(),
+                    Some(barometer_core::stack::StripItem::Module(
+                        barometer_core::ModuleId::Sensors | barometer_core::ModuleId::Gpu
+                    )) | Some(barometer_core::stack::StripItem::Stack(_))
+                ),
+                settings_visible: for_settings,
+            };
+            if let Some(module) = modules
+                .iter_mut()
+                .find(|m| m.id() == barometer_core::ModuleId::Sensors)
+            {
+                module.shown(demand.any());
+            }
             let live = snapshot(&modules, height_dip, &settings, for_settings, with_sensors);
 
             let density = Density::choose(height_dip, font.size_dip);

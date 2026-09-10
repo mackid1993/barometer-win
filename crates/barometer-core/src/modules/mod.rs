@@ -19,5 +19,5 @@ pub use disk::DiskModule;
 pub use gpu::GpuModule;
 pub use memory::MemoryModule;
 pub use network::NetworkModule;
-pub use sensors::SensorsModule;
+pub use sensors::{SensorDemand, SensorsModule};
 pub use weather::WeatherModule;

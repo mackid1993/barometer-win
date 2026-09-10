@@ -224,23 +224,35 @@ impl Module for DiskModule {
         let of = |values: &[crate::pdh::Instance], name: &str| -> f64 {
             values.iter().find(|i| i.name == name).map(|i| i.value.max(0.0)).unwrap_or(0.0)
         };
-        let known = self.models.lock().ok().map(|m| m.clone()).unwrap_or_default();
-        // Whichever disks nobody has asked about yet, asked once, together.
-        let unasked: Vec<String> = read_values
-            .iter()
-            .map(|i| i.name.clone())
-            .filter(|name| name != TOTAL_INSTANCE && !known.contains_key(name))
-            .collect();
-        if !unasked.is_empty() {
-            // Claimed before the thread starts, so a disk that takes seconds
-            // to answer is not asked again on every tick in between. The
-            // placeholder reads as "no model", which is also the answer for
-            // a disk that never gives one.
-            if let Ok(mut slot) = self.models.lock() {
+        // One pass under the lock: forget the disks that have gone, and note
+        // the ones nobody has asked about yet.
+        //
+        // The whole map used to be cloned here instead, once a second for the
+        // life of the process, and nothing ever left it. The key is the
+        // counter's instance name - "0 C:" - so a drive letter that moves or a
+        // USB disk that is unplugged leaves an entry that can never match an
+        // instance again, and a machine that sees a lot of removable media
+        // accretes them.
+        let unasked: Vec<String> = match self.models.lock() {
+            Ok(mut known) => {
+                known.retain(|name, _| read_values.iter().any(|i| &i.name == name));
+                let unasked: Vec<String> = read_values
+                    .iter()
+                    .map(|i| i.name.clone())
+                    .filter(|name| name != TOTAL_INSTANCE && !known.contains_key(name))
+                    .collect();
+                // Claimed before the thread starts, so a disk that takes
+                // seconds to answer is not asked again on every tick in
+                // between. The placeholder reads as "no model", which is also
+                // the answer for a disk that never gives one.
                 for name in &unasked {
-                    slot.insert(name.clone(), None);
+                    known.insert(name.clone(), None);
                 }
+                unasked
             }
+            Err(_) => Vec::new(),
+        };
+        if !unasked.is_empty() {
             let models = Arc::clone(&self.models);
             std::thread::spawn(move || {
                 for name in unasked {
@@ -251,19 +263,22 @@ impl Module for DiskModule {
                 }
             });
         }
+        // Borrowed for the length of the build rather than copied out of.
+        let known = self.models.lock();
         let mut devices: Vec<DiskDevice> = read_values
             .iter()
             .filter(|i| i.name != TOTAL_INSTANCE)
             .map(|i| DiskDevice {
                 id: i.name.clone(),
                 name: device_name(&i.name),
-                model: known.get(&i.name).cloned().flatten(),
+                model: known.as_ref().ok().and_then(|k| k.get(&i.name).cloned().flatten()),
                 read: i.value.max(0.0),
                 write: of(&write_values, &i.name),
                 read_ops: of(&read_ops, &i.name),
                 write_ops: of(&write_ops, &i.name),
             })
             .collect();
+        drop(known);
         devices.sort_by(|a, b| a.id.cmp(&b.id));
         self.devices = devices;
 
