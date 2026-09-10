@@ -560,7 +560,7 @@ preview and on the taskbar", and holds:
 | Text | Font | The family the strip draws in |
 | | Heading font | A face of its own for the names on the strip, or the same family. On Windows a weight is often a family - Segoe UI Semibold is its own - so a heading can be a different face rather than only a heavier one |
 | | Weight | Headings and values side by side, one dropdown each, offering only the weights that family has faces for |
-| | Text size | Slider 7-14, **default 9**; caption says whether two rows fit at that size on this taskbar |
+| | Text size | Slider 6-24, **default 9**; caption says whether two rows fit at that size on this taskbar, or that the bar held it down |
 | Spacing | Between columns | Slider 0–24, **default 3** |
 
 The Theme tiles, the Colors card and the graph-opacity row were not built (`ui-design.md` §2.6), and

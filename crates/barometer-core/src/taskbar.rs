@@ -125,6 +125,14 @@ pub const TEXT_DIP: f32 = 9.0;
 /// reading the two as the same bar gets both wrong.
 const TWO_ROW_FRACTION: f32 = 0.31;
 
+/// The largest one row of type may be, as a share of the bar's height.
+///
+/// A line's box is about 1.35 times its size, so seven tenths fills 95% of
+/// the bar: the most a single row can be without its ascenders and
+/// descenders leaving the taskbar. This is a physical limit, not a taste,
+/// and it is the only thing that ever overrides the size the user chose.
+const ONE_ROW_CAP: f32 = 0.7;
+
 impl Density {
     /// Chooses the row count for a bar height at the size the user set.
     ///
@@ -132,13 +140,27 @@ impl Density {
     /// default size every height Windows 11 offers has, the 32dip small
     /// taskbar included; a larger size drops to one row where two no longer
     /// fit rather than shrinking back, because the size was the user's
-    /// choice and a row nobody asked for is the lesser thing to lose.
+    /// choice and a row nobody asked for is the lesser thing to lose. Only a
+    /// size the bar cannot hold even in one row is reduced, to the largest
+    /// that fits, since text hanging out of the taskbar is not a choice
+    /// anybody meant to make.
     pub fn choose(height_dip: f32, text_dip: f32) -> Density {
         let text_dip = text_dip.clamp(
             crate::settings::StripFont::MIN_SIZE_DIP,
             crate::settings::StripFont::MAX_SIZE_DIP,
         );
-        Density { text_dip, two_rows: height_dip * TWO_ROW_FRACTION >= text_dip }
+        if height_dip * TWO_ROW_FRACTION >= text_dip {
+            return Density { text_dip, two_rows: true };
+        }
+        Density { text_dip: text_dip.min(height_dip * ONE_ROW_CAP), two_rows: false }
+    }
+
+    /// Whether the bar held the size down to fit one row.
+    pub fn held_to_the_bar(&self, asked_dip: f32) -> bool {
+        self.text_dip < asked_dip.clamp(
+            crate::settings::StripFont::MIN_SIZE_DIP,
+            crate::settings::StripFont::MAX_SIZE_DIP,
+        )
     }
 }
 
@@ -187,6 +209,19 @@ mod tests {
         assert_eq!(d.text_dip, 12.0);
         // The default bar still has the room at that size.
         assert!(Density::choose(48.0, 12.0).two_rows);
+    }
+
+    #[test]
+    fn a_size_the_bar_cannot_hold_in_one_row_is_held_to_the_largest_that_fits() {
+        let d = Density::choose(32.0, 24.0);
+        assert!(!d.two_rows);
+        assert!(d.text_dip < 24.0);
+        assert!(d.held_to_the_bar(24.0));
+        // A line's box is about 1.35 times the size, and it has to stay inside the bar.
+        assert!(d.text_dip * 1.35 <= 32.0);
+        // The default bar holds the whole range in one row.
+        assert_eq!(Density::choose(48.0, 24.0).text_dip, 24.0);
+        assert!(!Density::choose(48.0, 24.0).held_to_the_bar(24.0));
     }
 
     #[test]

@@ -561,9 +561,16 @@ pub fn paint(
 /// buys on this taskbar, which is the one consequence of the size that is
 /// not obvious from the number.
 pub fn size_caption(model: &Model, snapshot: &Snapshot) -> String {
+    let asked = model.settings.font.size_dip;
     let density = density(model, snapshot);
     if density.two_rows {
         "Two rows fit at this size on your taskbar.".to_string()
+    } else if density.held_to_the_bar(asked) {
+        format!(
+            "Held to {} pt: the largest one row your {} DIP taskbar can hold.",
+            density.text_dip.round(),
+            snapshot.taskbar_height_dip.round()
+        )
     } else {
         format!(
             "One row: two rows of {} pt do not fit a {} DIP taskbar. Smaller text brings the labels back.",
