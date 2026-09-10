@@ -74,6 +74,22 @@ static SECTIONS: [Section; 5] = [
     Section { kind: SensorKind::Current, title: "Current", color: Color(0x00C7BE) },
 ];
 
+/// "2 temperatures", "1 fan", "1 power reading": the count in words that
+/// agree with it. Power, voltage and current are what is measured, not the
+/// things counted, so those count readings.
+fn count_words(count: usize, kind: &SensorKind) -> String {
+    let one = count == 1;
+    let noun = match kind {
+        SensorKind::Temperature => if one { "temperature" } else { "temperatures" },
+        SensorKind::Fan => if one { "fan" } else { "fans" },
+        SensorKind::Power => if one { "power reading" } else { "power readings" },
+        SensorKind::Voltage => if one { "voltage reading" } else { "voltage readings" },
+        SensorKind::Current => if one { "current reading" } else { "current readings" },
+        _ => if one { "reading" } else { "readings" },
+    };
+    format!("{count} {noun}")
+}
+
 /// A minute of history for every reading, by sensor id.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct History {
@@ -184,7 +200,7 @@ impl SensorsSnapshot {
             .iter()
             .filter_map(|section| {
                 let count = self.sensors.iter().filter(|sensor| sensor.kind == section.kind).count();
-                (count > 0).then(|| format!("{count} {}", section.title.to_lowercase()))
+                (count > 0).then(|| count_words(count, &section.kind))
             })
             .collect();
         if counts.is_empty() {
@@ -579,8 +595,8 @@ mod tests {
         );
         let elements = laid_out(&snapshot);
         let labels: Vec<&str> =
-            texts(&elements).into_iter().filter(|t| ["TEMPERATURES", "FANS", "POWER", "VOLTAGE", "CURRENT", "LOAD"].contains(t)).collect();
-        assert_eq!(labels, vec!["TEMPERATURES", "FANS", "CURRENT"]);
+            texts(&elements).into_iter().filter(|t| ["Temperatures", "Fans", "Power", "Voltage", "Current", "LOAD"].contains(t)).collect();
+        assert_eq!(labels, vec!["Temperatures", "Fans", "Current"]);
         // Each card counts its rows in a chip of its own color.
         let chips: Vec<(&str, Color)> = elements
             .iter()
@@ -702,7 +718,7 @@ mod tests {
     fn the_hero_shows_the_hottest_reading_anywhere_and_counts_each_kind() {
         let mut snapshot = SensorsSnapshot::default();
         snapshot.observe(&machine(), None);
-        assert_eq!(snapshot.subtitle(), "2 temperatures  \u{00B7}  1 fans  \u{00B7}  1 power");
+        assert_eq!(snapshot.subtitle(), "2 temperatures  \u{00B7}  1 fan  \u{00B7}  1 power reading");
         let elements = laid_out(&snapshot);
         let headline = elements
             .iter()
@@ -794,7 +810,20 @@ mod tests {
         assert!(content.tick());
         let page = content.build(&cx);
         assert!(!content.tick());
-        assert!(texts(&page.elements).contains(&"TEMPERATURES"));
+        assert!(texts(&page.elements).contains(&"Temperatures"));
         assert!(texts(&page.elements).contains(&"GPU Core"));
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let slot = Arc::new(Mutex::new(SensorsSnapshot::default()));
+        slot.lock().unwrap().observe(&machine(), None);
+        let mut content = SensorsContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "sensors", light, 0);
+        }
     }
 }

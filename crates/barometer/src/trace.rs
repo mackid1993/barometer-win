@@ -14,15 +14,18 @@
 //
 // So it goes to a file, and it is switched on by the presence of another file
 // rather than by an environment variable. A variable would have to be set for
-// the task's own environment, which means editing the task; a file next to the
-// settings is something a person can create in Explorer and delete afterwards.
+// the task's own environment, which means editing the task; a file in the app's
+// local-data folder is something a person can create in Explorer and delete
+// afterwards.
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// Create this beside settings.json to switch tracing on.
+/// Create this in %LOCALAPPDATA%Barometer to switch tracing on. Local rather
+/// than roaming, beside the log it switches on, because a trace is about this
+/// machine and should not follow the user to another.
 const SWITCH: &str = "trace.on";
 const LOG: &str = "trace.log";
 

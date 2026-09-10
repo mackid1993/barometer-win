@@ -198,6 +198,25 @@ pub fn sun_ink(light: bool) -> Color {
     }
 }
 
+/// A cloud as a glyph on a card, and mist: the same inks the marks use,
+/// for the tiles that show cloud cover and visibility, so a tile's symbol
+/// is the color the same thing is everywhere else on the panel.
+pub fn cloud_ink(light: bool) -> Color {
+    if light {
+        Color(0x64748B)
+    } else {
+        Color(0xCBD5E1)
+    }
+}
+
+pub fn mist_ink(light: bool) -> Color {
+    if light {
+        Color(0x71717A)
+    } else {
+        Color(0xA1A1AA)
+    }
+}
+
 /// The inks a condition's mark is drawn in, base glyph then accent.
 ///
 /// SF Symbols render the Mac's marks in several colors at once; Segoe Fluent
@@ -209,8 +228,8 @@ pub fn mark_inks(condition: Condition, light: bool) -> (Color, Color) {
     let pick = |dark: u32, on_light: u32| Color(if light { on_light } else { dark });
     let sun = sun_ink(light);
     let moon = pick(0xC7D2FE, 0x6366F1);
-    let cloud = pick(0xCBD5E1, 0x64748B);
-    let mist = pick(0xA1A1AA, 0x71717A);
+    let cloud = cloud_ink(light);
+    let mist = mist_ink(light);
     let rain = rain_ink(light);
     let rain_deep = pick(0x3B82F6, 0x1D4ED8);
     let flake = pick(0xBAE6FD, 0x0284C7);

@@ -537,6 +537,11 @@ fn rate_tiles(b: &mut Builder, tiles: [(&'static str, &str, &str, Color); 2]) {
 fn dual_graph(b: &mut Builder, history: &[(f32, f32)], accent: Accent) {
     let (down, up) = dual_series(history);
     let plate = b.plate(GRAPH_H);
+    if history.len() < 2 {
+        // As the disks plate says it; see `mirrored_graph`.
+        b.text(plate, "Collecting history{2026}", Style::Caption, Ink::Secondary, Align::Center);
+        return;
+    }
     let mut download = Graph::area(down, Accent { primary: accent.primary, secondary: accent.primary });
     download.line = 1.5;
     let mut upload = Graph::area(up, Accent { primary: accent.secondary, secondary: accent.secondary });
@@ -699,7 +704,11 @@ mod tests {
 
     #[test]
     fn the_two_graphs_share_one_plate_and_one_set_of_gridlines() {
-        let elements = laid_out(&sampled(RateUnit::Bytes, false));
+        let mut snapshot = sampled(RateUnit::Bytes, false);
+        // Two samples make a history; with fewer the plate says so instead.
+        snapshot.observe(Some((1.0, 1.0)));
+        snapshot.observe(Some((2.0, 1.0)));
+        let elements = laid_out(&snapshot);
         let graphs: Vec<&Element> = elements.iter().filter(|e| matches!(e.kind, Kind::Graph(_))).collect();
         assert_eq!(graphs.len(), 2);
         assert_eq!(graphs[0].rect, graphs[1].rect);
@@ -714,9 +723,9 @@ mod tests {
         let texts = texts(&elements);
         assert!(texts.contains(&"Waiting for the first sample"));
         assert!(texts.contains(&DASH));
-        assert!(texts.contains(&"ACTIVITY"));
-        assert!(!texts.contains(&"CONNECTION"));
-        assert!(!texts.contains(&"TOP NETWORK ACTIVITY"));
+        assert!(texts.contains(&"Activity"));
+        assert!(!texts.contains(&"Connection"));
+        assert!(!texts.contains(&"Top network activity"));
         assert!(!elements.iter().any(|e| matches!(e.kind, Kind::Chip { .. })));
     }
 
@@ -808,7 +817,7 @@ mod tests {
         let marks = elements.iter().filter(|e| matches!(e.kind, Kind::Glyph { glyph, .. } if glyph == icons::PROCESS)).count();
         assert_eq!(marks, 5);
         snapshot.shows_processes = false;
-        assert!(!texts(&laid_out(&snapshot)).contains(&"TOP NETWORK ACTIVITY"));
+        assert!(!texts(&laid_out(&snapshot)).contains(&"Top network activity"));
     }
 
     #[test]
@@ -851,7 +860,7 @@ mod tests {
     #[test]
     fn the_wifi_card_appears_only_with_a_radio_and_names_the_signal() {
         let mut snapshot = sampled(RateUnit::Bytes, false);
-        assert!(!texts(&laid_out(&snapshot)).contains(&"WI-FI"));
+        assert!(!texts(&laid_out(&snapshot)).contains(&"Wi-Fi"));
         snapshot.wifi = Some(Wifi {
             ssid: None,
             rssi: Some(-70),
@@ -863,7 +872,7 @@ mod tests {
         });
         let elements = laid_out(&snapshot);
         let texts = texts(&elements);
-        assert!(texts.contains(&"WI-FI"));
+        assert!(texts.contains(&"Wi-Fi"));
         assert!(texts.contains(&"Name unavailable"));
         assert!(texts.contains(&"36 \u{00B7} 5 GHz"));
         assert!(texts.contains(&"WPA3"));
@@ -926,5 +935,19 @@ mod tests {
         assert!(content.tick());
         let page = content.build(&cx);
         assert!(!page.elements.iter().any(|e| matches!(e.kind, Kind::Glyph { glyph, .. } if glyph == glyph::CHECK)));
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let mut snapshot = sampled(RateUnit::Bytes, false);
+        snapshot.connection = Connection { ipv4: vec!["192.168.1.20".into()], ..Default::default() };
+        let slot = Arc::new(Mutex::new(snapshot));
+        let mut content = NetworkContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "network", light, 0);
+        }
     }
 }

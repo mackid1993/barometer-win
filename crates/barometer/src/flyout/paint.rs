@@ -22,7 +22,7 @@
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON};
 use windows_sys::Win32::Graphics::Gdi::{
-    DrawTextW, GetTextExtentPoint32W, SelectObject, SetBkMode, SetTextCharacterExtra, SetTextColor,
+    DrawTextW, GetTextExtentPoint32W, SelectObject, SetBkMode, SetTextColor,
     DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE,
     DT_VCENTER, DT_WORDBREAK, HFONT, TRANSPARENT,
 };
@@ -248,22 +248,13 @@ impl<'c, 'f> Surface<'c, 'f> {
         let px = rect.px(self.scale());
         let mut bounds = RECT { left: px.left, top: px.top, right: px.right, bottom: px.bottom };
         let units = wide(text);
-        // The one all-capitals string in the panel is the section label, and
-        // it is the one that wants its letters spaced: capitals set solid
-        // read as shouting where the same word tracked out reads as a label.
-        let tracked = style == Style::CaptionStrong
-            && text.chars().any(char::is_alphabetic)
-            && text == text.to_uppercase();
-        let extra = if tracked { (0.9 * self.scale()).round() as i32 } else { 0 };
         // SAFETY: the DC is live, the font outlives the call, and the string
         // is passed with its length.
         unsafe {
             let previous = SelectObject(self.canvas.dc, font as _);
             SetBkMode(self.canvas.dc, TRANSPARENT as i32);
             SetTextColor(self.canvas.dc, color.colorref());
-            SetTextCharacterExtra(self.canvas.dc, extra);
             DrawTextW(self.canvas.dc, units.as_ptr(), units.len() as i32, &mut bounds, flags);
-            SetTextCharacterExtra(self.canvas.dc, 0);
             SelectObject(self.canvas.dc, previous);
         }
     }
@@ -820,6 +811,19 @@ pub fn draw(surface: &mut Surface, elements: &[Element], hover: Option<Id>, pres
                 // it says where in the chart we are, not where it is drawn.
                 let shift = snap_dip(*offset, surface.scale());
                 painter.paint(surface, Rect::new(rect.x - shift, rect.y, *content_w, rect.h), is_hover);
+                // The picture fades into the plate at an edge it continues
+                // past, the way every sideways list on Windows does. Cut
+                // dead at the edge it looked finished, and nothing invites
+                // a scroll less than a picture that looks finished.
+                let plate = surface.palette.plate;
+                if *offset > 0.5 {
+                    let edge = Rect::new(rect.x, rect.y, SCROLL_FADE_W, rect.h);
+                    surface.fill_round_gradient(edge, PLATE_RADIUS, (plate, 255), (plate, 0), 0.0);
+                }
+                if *offset + rect.w < *content_w - 0.5 {
+                    let edge = Rect::new(rect.right() - SCROLL_FADE_W, rect.y, SCROLL_FADE_W, rect.h);
+                    surface.fill_round_gradient(edge, PLATE_RADIUS, (plate, 0), (plate, 255), 0.0);
+                }
                 if let Some((x, w)) = scroll_thumb(rect.w, *content_w, *offset) {
                     // A thumb along the plate's bottom edge, like the panel's
                     // own down its right: a plate with more to its right has
@@ -843,6 +847,8 @@ pub fn draw(surface: &mut Surface, elements: &[Element], hover: Option<Id>, pres
 
 /// How far the sideways scroller's thumb stays in from the plate's ends.
 const SCROLL_THUMB_INSET: f32 = 6.0;
+/// How wide the fade is at an edge a sideways scroller continues past.
+const SCROLL_FADE_W: f32 = 24.0;
 
 /// A normalized series on a plate, from NormalizedGraphSeries.
 fn draw_graph(surface: &mut Surface, rect: Rect, graph: &Graph) {
@@ -859,6 +865,15 @@ fn draw_graph(surface: &mut Surface, rect: Rect, graph: &Graph) {
         }
     }
     if count < 2 {
+        // An area graph with nothing to plot yet says so, in the words the
+        // rest of the panel uses for a reading on its way. A plate with
+        // nothing on it looked like something had failed to draw, and it
+        // was the first thing a panel showed on every open. Sparklines are
+        // too small to carry a sentence and simply stay empty.
+        if graph.grid {
+            let ink = surface.palette.theme.text_secondary;
+            surface.text(rect, "Collecting history\u{2026}", Style::Caption, ink, Align::Center);
+        }
         return;
     }
     let points: Vec<(f32, f32)> = graph
@@ -894,9 +909,10 @@ fn draw_graph(surface: &mut Surface, rect: Rect, graph: &Graph) {
         top.max(bottom),
     );
     if graph.glow {
-        // Two wider passes at low alpha stand in for the Mac's blur.
-        surface.polyline(&points, graph.line + 3.0, graph.color, 40);
-        surface.polyline(&points, graph.line + 1.5, graph.color, 70);
+        // One wider pass at low alpha stands in for the Mac's blur. Two
+        // passes were tried and read as a second, thicker line under the
+        // first rather than as light around it.
+        surface.polyline(&points, graph.line + 2.5, graph.color, 34);
     }
     surface.polyline_gradient(&points, graph.line, graph.color, graph.color2, 255);
     if graph.marker {

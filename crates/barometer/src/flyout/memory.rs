@@ -720,8 +720,8 @@ mod tests {
         for pair in cards.windows(2) {
             assert!(pair[1].y >= pair[0].bottom(), "{pair:?}");
         }
-        let labels: Vec<&str> = texts(&elements).into_iter().filter(|t| ["BREAKDOWN", "COMMIT", "TOP PROCESSES"].contains(t)).collect();
-        assert_eq!(labels, ["BREAKDOWN", "COMMIT", "TOP PROCESSES"]);
+        let labels: Vec<&str> = texts(&elements).into_iter().filter(|t| ["Breakdown", "Commit", "Top processes"].contains(t)).collect();
+        assert_eq!(labels, ["Breakdown", "Commit", "Top processes"]);
         assert!(matches!(
             elements.iter().find(|e| matches!(e.kind, Kind::Card { .. })).unwrap().kind,
             Kind::Card { tint: Some(_) }
@@ -790,5 +790,17 @@ mod tests {
         assert_eq!(cards(&page.elements).len(), 3);
         assert!((page.height - (MemoryFlyout::new(full()).height(COLUMN_W, &measure) + 2.0 * PANEL_PAD)).abs() < 1e-3);
         assert_eq!(content.activate(Id::Custom(PROCESS_ID)), Response::None);
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let slot = Arc::new(Mutex::new(full()));
+        let mut content = MemoryContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "memory", light, 0);
+        }
     }
 }

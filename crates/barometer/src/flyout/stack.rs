@@ -623,4 +623,18 @@ mod tests {
         assert_eq!(elements[0].zones[0].0.y, 42.0);
         assert_eq!(elements[0].zones[0].0.x, 12.0);
     }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let (mut content, _feed) = stack(
+            vec![entry(StackMetric::CpuTotal), entry(StackMetric::GpuUtilization), entry(StackMetric::NetworkUpload)],
+            vec![],
+        );
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "stack", light, 0);
+        }
+    }
 }

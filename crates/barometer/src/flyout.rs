@@ -34,6 +34,8 @@ pub mod network;
 pub mod paint;
 pub mod panel;
 pub mod placement;
+#[cfg(test)]
+pub mod render;
 pub mod sensors;
 pub mod stack;
 pub mod appicon;

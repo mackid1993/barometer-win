@@ -1026,9 +1026,9 @@ mod tests {
         let labels: Vec<&str> = elements
             .iter()
             .filter_map(text_of)
-            .filter(|t| ["HISTORY", "CORES", "SYSTEM", "TOP PROCESSES"].contains(t))
+            .filter(|t| ["History", "Cores", "System", "Top processes"].contains(t))
             .collect();
-        assert_eq!(labels, ["HISTORY", "CORES", "SYSTEM", "TOP PROCESSES"]);
+        assert_eq!(labels, ["History", "Cores", "System", "Top processes"]);
         // The first card is the tinted one, as GlassCard(tint:) is.
         assert!(matches!(
             elements.iter().find(|e| matches!(e.kind, Kind::Card { .. })).unwrap().kind,
@@ -1275,5 +1275,17 @@ mod tests {
         assert_eq!(content.activate(Id::Custom(END_TASK_ID | 1002)), Response::None);
         assert_eq!(*ended.lock().unwrap(), Some((1002, "process2".to_string())));
         assert_eq!(content.activate(Id::Settings), Response::None);
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let slot = Arc::new(Mutex::new(full()));
+        let mut content = CpuContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "cpu", light, 0);
+        }
     }
 }

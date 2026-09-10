@@ -315,6 +315,12 @@ fn rate_tiles(b: &mut Builder, tiles: [(&'static str, &str, &str, Color); 2]) {
 /// MirroredAreaGraph, sharing one scale so the eye can compare them.
 fn mirrored_graph(b: &mut Builder, history: &[(f32, f32)], accent: Accent) {
     let plate = b.plate(GRAPH_H);
+    if history.len() < 2 {
+        // Said in words, as a single area graph says it for itself: two
+        // half-plates with nothing on them looked like a failure to draw.
+        b.text(plate, "Collecting history{2026}", Style::Caption, Ink::Secondary, Align::Center);
+        return;
+    }
     let half = plate.h / 2.0;
     let (upper, lower) = mirrored_series(history);
     // The centerline goes down first so the washes sit over it, as the
@@ -562,8 +568,10 @@ mod tests {
         assert!(texts.contains(&"Waiting for the first sample"));
         assert!(texts.contains(&"Disk data unavailable"));
         assert!(texts.contains(&DASH), "the tiles show a dash, not a zero");
-        assert!(!texts.contains(&"VOLUMES"));
-        assert_eq!(elements.iter().filter(|e| matches!(e.kind, Kind::Graph(_))).count(), 2);
+        assert!(!texts.contains(&"Volumes"));
+        // No history yet: the plate says so instead of drawing two empty halves.
+        assert!(texts.contains(&"Collecting history{2026}"));
+        assert_eq!(elements.iter().filter(|e| matches!(e.kind, Kind::Graph(_))).count(), 0);
     }
 
     #[test]
@@ -575,7 +583,7 @@ mod tests {
         assert!(texts.contains(&"Read and write across every disk"));
         assert!(texts.contains(&"1.00 MB/s"));
         assert!(texts.contains(&"512 KB/s"));
-        assert!(texts.contains(&"VOLUMES"));
+        assert!(texts.contains(&"Volumes"));
         assert!(texts.contains(&"Volume capacity is not collected yet."));
         assert!(!texts.contains(&DASH));
         assert!(!elements.iter().any(|e| matches!(&e.kind, Kind::Text { style: Style::Title, .. })));
@@ -638,7 +646,7 @@ mod tests {
     #[test]
     fn physical_disks_appear_only_when_there_are_any() {
         let mut snapshot = sampled();
-        assert!(!texts(&laid_out(&snapshot)).contains(&"PHYSICAL DISKS"));
+        assert!(!texts(&laid_out(&snapshot)).contains(&"Physical disks"));
         snapshot.devices = vec![Device {
             model: "Samsung SSD 990 PRO 2TB".into(),
             id: "Disk 0".into(),
@@ -649,7 +657,7 @@ mod tests {
         }];
         let elements = laid_out(&snapshot);
         let texts = texts(&elements);
-        assert!(texts.contains(&"PHYSICAL DISKS"));
+        assert!(texts.contains(&"Physical disks"));
         assert!(texts.contains(&"Samsung SSD 990 PRO 2TB"));
         assert!(texts.contains(&"12.5 read \u{00B7} 3.0 write /s"));
         assert!(elements.iter().any(|e| matches!(&e.kind, Kind::Chip { text, .. } if text == "Disk 0")));
@@ -704,5 +712,17 @@ mod tests {
         assert!(texts(&page.elements).contains(&"2.00 KB/s"));
         let expected = DisksFlyout::new(slot.lock().unwrap().clone()).height(PANEL_W - 2.0 * PANEL_PAD, &measure);
         assert!((page.height - (expected + 2.0 * PANEL_PAD)).abs() < 1e-3);
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let slot = Arc::new(Mutex::new(sampled()));
+        let mut content = DisksContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "disks", light, 0);
+        }
     }
 }

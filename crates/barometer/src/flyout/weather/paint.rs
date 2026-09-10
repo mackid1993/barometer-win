@@ -115,8 +115,15 @@ impl Painter for Mark {
     }
 }
 
-/// The hourly chart: rain bars, the temperature's wash and glowing line,
-/// the labels every third hour, and the chosen hour when there is one.
+/// The hourly chart: rain bars, the temperature's line over its wash, the
+/// labels every third hour, and the chosen hour when there is one.
+///
+/// The Mac draws its line with a blur behind it. A first port stood in for
+/// that with two wider strokes in the accent's second color under a
+/// gradient stroke, and on a card it read as two lines of two colors, not
+/// one line with a glow; the wash under it was in that second color too,
+/// so it did not look like the line's shadow but like a third thing. One
+/// stroke, one color, and a wash of the same color fading to nothing.
 #[derive(Debug)]
 pub struct Chart {
     pub geometry: Geometry,
@@ -132,27 +139,28 @@ impl Painter for Chart {
 
         let selected = self.selected.and_then(|index| g.columns.get(index));
         if let Some(column) = selected {
-            let band = Rect::new(ox + column.x - g.step / 2.0, oy + 4.0, g.step, rect.h - 8.0);
-            surface.fill_round_alpha(band, 4.0, accent.primary, 36);
+            // A column of the plate's own tint, from under the hour label to
+            // above the thumb, so the chosen hour reads as chosen and not as
+            // a slab leaning on the plate's edge.
+            let band = Rect::new(ox + column.x - g.step / 2.0, oy + 3.0, g.step, rect.h - 3.0 - 10.0);
+            surface.fill_round_alpha(band, 5.0, accent.primary, 26);
         }
         for bar in &g.bars {
-            surface.fill_round_gradient(bar.offset(ox, oy), 2.0, (sky::RAIN, 230), (sky::RAIN_DEEP, 128), 90.0);
+            surface.fill_round_alpha(bar.offset(ox, oy), 2.0, sky::RAIN, 170);
         }
         if g.area.len() >= 3 {
             surface.polygon_vertical(
                 &shift(&g.area),
-                (accent.secondary, 71),
-                (accent.primary, 5),
+                (accent.primary, 52),
+                (accent.primary, 0),
                 oy + g.area_top,
                 oy + g.area_bottom,
             );
         }
         if g.line.len() >= 2 {
             let line = shift(&g.line);
-            // Two wider passes at low alpha stand in for the Mac's blur.
-            surface.polyline(&line, 5.0, accent.secondary, 40);
-            surface.polyline(&line, 3.5, accent.secondary, 80);
-            surface.polyline_gradient(&line, 2.0, accent.primary, accent.secondary, 255);
+            surface.polyline(&line, 4.0, accent.primary, 28);
+            surface.polyline(&line, 2.0, accent.primary, 255);
         }
         if let Some((x, y)) = selected.and_then(|column| column.dot) {
             surface.ellipse(x + ox, y + oy, 5.0, 5.0, accent.primary, 90);
@@ -170,7 +178,12 @@ impl Painter for Chart {
             }
             surface.text(block(chart::TEMPERATURE_ROW), &label.temperature, Style::CaptionStrong, primary, Align::Center);
             if let Some(probability) = &label.probability {
-                let row = Rect::new(ox + label.x, rect.bottom() - 6.0 - chart::PROBABILITY_ROW_H, label.width, chart::PROBABILITY_ROW_H);
+                let row = Rect::new(
+                    ox + label.x,
+                    rect.bottom() - chart::PROBABILITY_ROW_BOTTOM - chart::PROBABILITY_ROW_H,
+                    label.width,
+                    chart::PROBABILITY_ROW_H,
+                );
                 surface.text(row, probability, Style::Caption, sky::rain_ink(surface.palette.theme.light), Align::Center);
             }
         }

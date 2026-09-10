@@ -363,9 +363,9 @@ pub struct StripFont {
     ///
     /// The size itself, not a ceiling on an automatic one - that version was
     /// taken out because a control that could only ever lower a figure the
-    /// strip had already chosen confused more than it helped. The strip
-    /// keeps two rows wherever the bar has room for two at this size and
-    /// drops to one where it does not; see `taskbar::Density`.
+    /// strip had already chosen confused more than it helped. The strip is
+    /// always two rows; a size two rows of which the bar cannot hold is held
+    /// down to the largest it can. See `taskbar::Density`.
     pub size_dip: f32,
 }
 

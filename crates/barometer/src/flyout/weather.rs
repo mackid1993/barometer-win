@@ -657,7 +657,10 @@ fn daily_section(b: &mut Builder, view: &View, forecast: &DetailForecast) {
         x += 30.0 + 9.0;
         b.text(Rect::new(x, y, 32.0, h), &format::degree(day.low), Style::Body, Ink::Secondary, Align::Right);
         x += 32.0 + 9.0;
-        let high_x = row.right() - 6.0 - 32.0;
+        // A chevron at the end, as Windows' own rows that open a page carry
+        // one: the hover wash alone did not say these rows go anywhere.
+        let chevron_w = 12.0;
+        let high_x = row.right() - 6.0 - chevron_w - 6.0 - 32.0;
         let track = Rect::new(x, y + (h - 6.0) / 2.0, (high_x - 9.0 - x).max(20.0), 6.0);
         b.passive(track, Kind::Track);
         let bar = range_bar(track, day.low, day.high, minimum, maximum);
@@ -668,17 +671,25 @@ fn daily_section(b: &mut Builder, view: &View, forecast: &DetailForecast) {
             Kind::Custom(Box::new(Range { stops: sky::Scale::gradient(low_c, high_c), glow: sky::Scale::color(high_c) })),
         );
         b.text(Rect::new(high_x, y, 32.0, h), &format::degree(day.high), Style::Body, Ink::Primary, Align::Right);
+        b.passive(
+            Rect::new(row.right() - 6.0 - chevron_w, y, chevron_w, h),
+            Kind::Glyph { glyph: glyph::CHEVRON_RIGHT, size: 9.0, ink: Ink::Secondary },
+        );
         b.advance(DAY_ROW_H);
     }
     b.card_end(card);
 }
 
-/// A moonrise or moonset, or why there is none to print.
-fn moon_event(time: Option<LocalTime>, day: &DailyPoint) -> String {
+/// "Moonrise 2:10 AM", or the sentence for a day without one.
+///
+/// A day with no moonrise is ordinary - the moon rises about fifty minutes
+/// later each day and skips one roughly monthly - so it is said as a plain
+/// fact rather than as a value that failed to arrive.
+fn moon_event(name: &str, time: Option<LocalTime>, day: &DailyPoint) -> String {
     match time {
-        Some(time) => clock::time_short(time),
-        None if day.moon_events_available => "No event this day".to_string(),
-        None => "Unavailable".to_string(),
+        Some(time) => format!("{name} {}", clock::time_short(time)),
+        None if day.moon_events_available => format!("No {} today", name.to_lowercase()),
+        None => format!("{name} unavailable"),
     }
 }
 
@@ -690,7 +701,7 @@ fn moon_event(time: Option<LocalTime>, day: &DailyPoint) -> String {
 /// glance what "Sunrise 6:58 AM · Sunset 7:41 PM" makes the reader work out.
 fn sun_moon_section(b: &mut Builder, view: &View, forecast: &DetailForecast, day: &DayDetails, today: bool) {
     let card = b.card_begin(None);
-    b.section_label("Sun & Moon");
+    b.section_label("Sun & moon");
     let plate = b.plate(SUN_PLATE_H);
     let progress = if today { marks::day_progress(day.day.sunrise, day.day.sunset, view.now(forecast)) } else { None };
     let path = marks::sun_path(Rect::new(0.0, 0.0, plate.w, plate.h), progress);
@@ -724,8 +735,8 @@ fn sun_moon_section(b: &mut Builder, view: &View, forecast: &DetailForecast, day
 
     let half = b.inner_w() / 2.0;
     let y = b.y();
-    b.text(Rect::new(b.inner_x(), y, half, 16.0), &format!("Moonrise {}", moon_event(day.day.moonrise, &day.day)), Style::Caption, Ink::Secondary, Align::Left);
-    b.text(Rect::new(b.inner_x() + half, y, half, 16.0), &format!("Moonset {}", moon_event(day.day.moonset, &day.day)), Style::Caption, Ink::Secondary, Align::Right);
+    b.text(Rect::new(b.inner_x(), y, half, 16.0), &moon_event("Moonrise", day.day.moonrise, &day.day), Style::Caption, Ink::Secondary, Align::Left);
+    b.text(Rect::new(b.inner_x() + half, y, half, 16.0), &moon_event("Moonset", day.day.moonset, &day.day), Style::Caption, Ink::Secondary, Align::Right);
     b.advance(16.0);
     b.card_end(card);
 }
@@ -771,14 +782,24 @@ fn details_section(b: &mut Builder, view: &View, forecast: &DetailForecast) {
             tint: Ink::Accent,
         },
         Tile { icon: TileIcon::Glyph(icons::SUN), label: "UV index".into(), value: format::number(hour.and_then(|h| h.uv_index)), tint: amber },
-        Tile { icon: TileIcon::Glyph(icons::CLOUD), label: "Cloud cover".into(), value: format::percent(hour.and_then(|h| h.cloud_cover)), tint: Ink::Secondary },
+        Tile {
+            icon: TileIcon::Glyph(icons::CLOUD),
+            label: "Cloud cover".into(),
+            value: format::percent(hour.and_then(|h| h.cloud_cover)),
+            tint: Ink::Custom(sky::cloud_ink(view.light)),
+        },
         Tile { icon: TileIcon::Glyph(icons::MIST), label: "Gusts".into(), value: format::wind(gusts, None, units), tint: Ink::Accent },
         Tile { icon: TileIcon::Glyph(icons::RAINING_CLOUD), label: "Precipitation".into(), value: format::precipitation(precipitation, units), tint: rain },
-        Tile { icon: TileIcon::Glyph(icons::EYE), label: "Visibility".into(), value: format::visibility(hour.and_then(|h| h.visibility), units), tint: Ink::Secondary },
+        Tile {
+            icon: TileIcon::Glyph(icons::EYE),
+            label: "Visibility".into(),
+            value: format::visibility(hour.and_then(|h| h.visibility), units),
+            tint: Ink::Custom(sky::mist_ink(view.light)),
+        },
     ];
     let card = b.card_begin(None);
     b.section_label("Details");
-    b.stat_tiles(tiles);
+    b.stat_tiles(with_values(tiles));
     b.card_end(card);
 }
 
@@ -949,7 +970,7 @@ fn day_page(b: &mut Builder, view: &View, index: usize) {
     let units = view.units();
     day_summary(b, view, &day);
     day_metrics(b, view, &day.day);
-    extra_section(b, "Rain, snow & sunshine", daily_rows(&day.day, units, PRECIPITATION_ROWS), Some(view.accent.primary));
+    extra_section(b, "Rain, snow & sunshine", daily_rows(&day.day, units, PRECIPITATION_ROWS), None);
     extra_section(b, "Air & comfort", daily_rows(&day.day, units, AIR_ROWS), None);
     hour_by_hour(b, view, forecast, &day, index);
     sun_moon_section(b, view, forecast, &day, index == 0);
@@ -1002,8 +1023,18 @@ fn day_metrics(b: &mut Builder, view: &View, day: &DailyPoint) {
     ];
     let card = b.card_begin(None);
     b.section_label("Day at a glance");
-    b.stat_tiles(tiles);
+    b.stat_tiles(with_values(tiles));
     b.card_end(card);
+}
+
+/// The tiles that have a value.
+///
+/// A tile printing a dash tells the reader nothing about the weather and
+/// something untrue about the provider, and a grid of eight with two dashes
+/// in it looks broken. The grid closes up around what is known, which is
+/// what the catalog rows below already do.
+fn with_values(tiles: Vec<Tile>) -> Vec<Tile> {
+    tiles.into_iter().filter(|tile| tile.value != DASH).collect()
 }
 
 /// A row of a catalog section: its label, its metric, how it is shown.
@@ -1198,6 +1229,7 @@ fn hour_by_hour(b: &mut Builder, view: &View, forecast: &DetailForecast, day: &D
         ("UV index".to_string(), format::number(point.uv_index)),
         ("Visibility".to_string(), format::visibility(point.visibility, units)),
     ];
+    let rows: Vec<(String, String)> = rows.into_iter().filter(|(_, value)| value != DASH).collect();
     b.kv_rows_in(x, w, &rows);
     for (title, spec) in HOUR_GROUPS {
         let rows = hourly_rows(point, units, spec);
@@ -1356,9 +1388,9 @@ mod tests {
         // The scale sits at the index's share of 300.
         assert!(elements.iter().any(|e| matches!(e.kind, Kind::Capsule { fraction, .. } if (fraction - 0.14).abs() < 1e-6)));
         // The card sits between the sun and the details, as the Swift's does.
-        let air_y = find_text(&elements, "AIR QUALITY").rect.y;
-        assert!(find_text(&elements, "SUN & MOON").rect.y < air_y);
-        assert!(air_y < find_text(&elements, "DETAILS").rect.y);
+        let air_y = find_text(&elements, "Air quality").rect.y;
+        assert!(find_text(&elements, "Sun & moon").rect.y < air_y);
+        assert!(air_y < find_text(&elements, "Details").rect.y);
     }
 
     /// A second saved place, so the location row has something to offer.
@@ -1381,7 +1413,7 @@ mod tests {
         let mut content = content(two, Some(forecast()));
         let elements = build(&mut content).elements;
         let words = texts(&elements);
-        assert!(words.iter().any(|word| word == "LOCATION"));
+        assert!(words.iter().any(|word| word == "Location"));
         // Both places, the one being shown in the accent and the other not.
         let chip = |name: &str| {
             elements
@@ -1400,14 +1432,14 @@ mod tests {
         let mut alone = snapshot();
         alone.locations = vec![austin()];
         let mut content = content_of(alone);
-        assert!(texts(&build(&mut content).elements).iter().any(|word| word == "LOCATION"));
+        assert!(texts(&build(&mut content).elements).iter().any(|word| word == "Location"));
         // None saved - a machine that located itself by address - still
         // says where the forecast is for, and that chip is not a control.
         let mut nowhere = snapshot();
         nowhere.locations.clear();
         let mut content = content_of(nowhere);
         let elements = build(&mut content).elements;
-        assert!(texts(&elements).iter().any(|word| word == "LOCATION"));
+        assert!(texts(&elements).iter().any(|word| word == "Location"));
         let austin = elements
             .iter()
             .find(|e| matches!(&e.kind, Kind::Chip { text, .. } if text == "Austin"))
@@ -1418,7 +1450,7 @@ mod tests {
         unknown.locations.clear();
         unknown.location = None;
         let mut content = content_of(unknown);
-        assert!(!texts(&build(&mut content).elements).iter().any(|word| word == "LOCATION"));
+        assert!(!texts(&build(&mut content).elements).iter().any(|word| word == "Location"));
     }
 
     /// A content over one snapshot with the usual forecast.
@@ -1439,11 +1471,11 @@ mod tests {
         let page = build(&mut content);
         let words = texts(&page.elements);
         let position = |wanted: &str| words.iter().position(|w| w == wanted).unwrap_or_else(|| panic!("{wanted} missing"));
-        assert!(position("Austin") < position("NEXT 48 HOURS"));
-        assert!(position("NEXT 48 HOURS") < position("10-DAY FORECAST"));
-        assert!(position("10-DAY FORECAST") < position("SUN & MOON"));
-        assert!(position("SUN & MOON") < position("DETAILS"));
-        assert!(position("DETAILS") < position("Weather data by Open-Meteo.com"));
+        assert!(position("Austin") < position("Next 48 hours"));
+        assert!(position("Next 48 hours") < position("10-day forecast"));
+        assert!(position("10-day forecast") < position("Sun & moon"));
+        assert!(position("Sun & moon") < position("Details"));
+        assert!(position("Details") < position("Weather data by Open-Meteo.com"));
         assert!(words.contains(&"Partly cloudy".to_string()));
         assert!(words.contains(&"Feels like 97\u{00B0}F".to_string()));
         assert!(page.height > 700.0, "the overview is the tallest panel and scrolls");
@@ -1489,12 +1521,12 @@ mod tests {
         let page = build(&mut content);
         let words = texts(&page.elements);
         assert!(words.contains(&"Wednesday, Sep 9".to_string()));
-        assert!(words.contains(&"DAY AT A GLANCE".to_string()));
-        assert!(words.contains(&"HOUR BY HOUR".to_string()));
+        assert!(words.contains(&"Day at a glance".to_string()));
+        assert!(words.contains(&"Hour by hour".to_string()));
         assert!(ui::find(&page.elements, Id::Custom(ID_BACK)).is_some());
         // Backspace goes back.
         assert_eq!(content.key(VK_BACK), Response::Relayout);
-        assert!(texts(&build(&mut content).elements).contains(&"10-DAY FORECAST".to_string()));
+        assert!(texts(&build(&mut content).elements).contains(&"10-day forecast".to_string()));
     }
 
     /// The sideways scroller with an id: its plate, its content width and
@@ -1523,7 +1555,7 @@ mod tests {
         assert_eq!(plate.h, chart::HEIGHT);
         // And the chip that says it scrolls, on the section label's line.
         let chip = page.elements.iter().find(|e| matches!(&e.kind, Kind::Chip { text, .. } if text == "Scroll for more")).expect("the chip");
-        let label = find_text(&page.elements, "NEXT 48 HOURS");
+        let label = find_text(&page.elements, "Next 48 hours");
         assert!(chip.rect.y < label.rect.bottom() && chip.rect.bottom() > label.rect.y);
         assert!(chip.rect.x > label.rect.x);
         assert!(chip.rect.right() <= plate.right() + 1e-3);
@@ -1589,7 +1621,7 @@ mod tests {
         content.activate(day_id(1));
         let words = texts(&build(&mut content).elements);
         assert!(words.contains(&"Estimated at local noon".to_string()));
-        assert!(words.contains(&"Moonrise No event this day".to_string()));
+        assert!(words.contains(&"No moonrise today".to_string()));
     }
 
     #[test]
@@ -1609,7 +1641,7 @@ mod tests {
         let mut content = content(snapshot, Some(forecast()));
         let words = texts(&build(&mut content).elements);
         assert!(words.iter().any(|w| w.starts_with("Refresh failed; showing saved weather. timed out")));
-        assert!(words.contains(&"10-DAY FORECAST".to_string()));
+        assert!(words.contains(&"10-day forecast".to_string()));
     }
 
     #[test]
@@ -1705,6 +1737,21 @@ mod tests {
             assert_eq!(day_index(day_chart_id(index)), None);
             assert_eq!(hour_index(day_chart_id(index)), None);
             assert_ne!(day_chart_id(index), Id::Custom(ID_CHART));
+        }
+    }
+
+    /// Paints the overview and a day page for a person to look at; see
+    /// `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_weather_pages_to_bitmaps() {
+        for light in [false, true] {
+            for (page, shown) in [("weather-overview", Shown::Overview), ("weather-day", Shown::Day(1))] {
+                let mut content = content(snapshot(), Some(forecast()));
+                content.shown = shown;
+                content.air = None;
+                crate::flyout::render::to_bitmap(&mut content, page, light, now());
+            }
         }
     }
 }

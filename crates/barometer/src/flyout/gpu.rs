@@ -473,9 +473,9 @@ mod tests {
         }
         let labels: Vec<&str> = texts(&elements)
             .into_iter()
-            .filter(|t| ["HISTORY", "UTILIZATION", "MEMORY", "HARDWARE"].contains(t))
+            .filter(|t| ["History", "Utilization", "Memory", "Hardware"].contains(t))
             .collect();
-        assert_eq!(labels, ["HISTORY", "UTILIZATION", "MEMORY", "HARDWARE"]);
+        assert_eq!(labels, ["History", "Utilization", "Memory", "Hardware"]);
         // The graph is the Swift's 96, taller than the CPU's, plotted by time.
         let graph = elements.iter().find(|e| matches!(e.kind, Kind::Graph(_))).unwrap();
         assert_eq!(graph.rect.h, 96.0);
@@ -665,5 +665,17 @@ mod tests {
         assert!((page.height - (GpuFlyout::new(full()).height(COLUMN_W, &measure) + 2.0 * PANEL_PAD)).abs() < 1e-3);
         assert_eq!(content.activate(HistoryRange::OneMinute.id()), Response::Relayout);
         assert_eq!(content.activate(HistoryRange::OneMinute.id()), Response::None);
+    }
+
+    /// Paints the panel for a person to look at; see `flyout::render`.
+    #[test]
+    #[ignore]
+    fn render_the_panel_to_bitmaps() {
+        let slot = Arc::new(Mutex::new(full()));
+        let mut content = GpuContent::new(Arc::clone(&slot));
+        content.tick();
+        for light in [false, true] {
+            crate::flyout::render::to_bitmap(&mut content, "gpu", light, 0);
+        }
     }
 }

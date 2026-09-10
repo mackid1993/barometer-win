@@ -682,7 +682,7 @@ created once per theme. No timers run when nothing changes; hover does not start
 
 ## 10. Flyout panels
 
-- **Size**: 320 wide (matching macOS). Height = content, capped at min(720, work-area height − 16); taller
+- **Size**: 380 wide (`ui::PANEL_W`; the macOS panel is 320, and the Windows one grew for its two-column tiles). Height = content, capped at min(720, work-area height − 16); taller
   content scrolls inside.
 - **Anchor**: horizontally centered on the clicked item's rect. Bottom taskbar: panel bottom = taskbar top − 8.
   Top taskbar: panel top = taskbar bottom + 8. Left/right taskbar: panel beside it with 8 gap, vertically

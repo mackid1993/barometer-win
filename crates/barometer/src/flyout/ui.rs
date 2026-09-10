@@ -555,11 +555,18 @@ impl<'m> Builder<'m> {
 
     /// A small-caps section label. Returns the room to its right, for a chip
     /// or a button that trails it.
+    /// A card's heading, in sentence case.
+    ///
+    /// It was set in capitals for a while, tracked out the way iOS sets its
+    /// grouped-list headers. Windows 11 sets every heading it has in
+    /// sentence case, the settings window beside this panel included, and a
+    /// row of capitals was the one thing on the panel that did not look
+    /// like it belonged to the machine it was on.
     pub fn section_label(&mut self, text: &str) -> Rect {
         let rect = Rect::new(self.inner_x(), self.y, self.inner_w(), SECTION_LABEL_H);
-        self.text(rect, &text.to_uppercase(), Style::CaptionStrong, Ink::Secondary, Align::Left);
+        self.text(rect, text, Style::CaptionStrong, Ink::Secondary, Align::Left);
         self.y += SECTION_LABEL_H + SECTION_GAP;
-        let label_w = self.text_width(&text.to_uppercase(), Style::CaptionStrong) + 8.0;
+        let label_w = self.text_width(text, Style::CaptionStrong) + 8.0;
         Rect::new(rect.x + label_w, rect.y - 2.0, (rect.w - label_w).max(0.0), SECTION_LABEL_H + 4.0)
     }
 

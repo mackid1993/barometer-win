@@ -65,11 +65,14 @@ pub fn offset_showing(column: usize, step: f32, content_w: f32, viewport_w: f32)
 }
 
 /// The label column's rows, from the plate's top: the hour, the mark, the
-/// temperature. The chance of rain sits at the very bottom.
+/// temperature. The chance of rain sits under the bars, above the thumb.
 pub const HOUR_ROW: (f32, f32) = (6.0, 14.0);
 pub const MARK_ROW: (f32, f32) = (21.0, 20.0);
 pub const TEMPERATURE_ROW: (f32, f32) = (42.0, 16.0);
 pub const PROBABILITY_ROW_H: f32 = 12.0;
+/// Where the chance of rain's row ends, from the plate's bottom: clear of
+/// the scroll thumb the plate draws along its edge.
+pub const PROBABILITY_ROW_BOTTOM: f32 = 12.0;
 
 /// The hours still ahead, up to `count` of them.
 ///
@@ -137,11 +140,13 @@ impl Geometry {
         // never allowed to reach zero.
         let spread = (maximum - minimum).max(1.0);
 
-        // The Swift's bands, measured from the plate's bottom.
-        let top = height - 68.0;
-        let bottom = height - 26.0;
-        let area_bottom = height - 22.0;
-        let bar_base = height - 18.0;
+        // The Swift's bands, measured from the plate's bottom, each lifted
+        // eight so the chance of rain has a row of its own above the plate's
+        // scroll thumb: printed at the Swift's height it sat on the thumb.
+        let top = height - 76.0;
+        let bottom = height - 34.0;
+        let area_bottom = height - 30.0;
+        let bar_base = height - 26.0;
 
         let mut columns = Vec::with_capacity(count);
         let mut line = Vec::new();
@@ -318,8 +323,8 @@ mod tests {
         let hourly = forecast();
         let points: Vec<&HourlyPoint> = hourly.iter().take(24).collect();
         let chart = Geometry::new(&points, 332.0, HEIGHT);
-        let top = HEIGHT - 68.0;
-        let bottom = HEIGHT - 26.0;
+        let top = HEIGHT - 76.0;
+        let bottom = HEIGHT - 34.0;
         // Midnight is the coldest hour and sits on the band's floor; 11pm the
         // warmest, on its ceiling.
         assert!((chart.columns[0].dot.unwrap().1 - bottom).abs() < 1e-3);
@@ -353,7 +358,7 @@ mod tests {
         assert_eq!(chart.bars.len(), 4);
         for bar in &chart.bars {
             assert!((bar.h - 8.8).abs() < 1e-3);
-            assert!((bar.bottom() - (HEIGHT - 18.0)).abs() < 1e-3);
+            assert!((bar.bottom() - (HEIGHT - 26.0)).abs() < 1e-3);
         }
         // A 1% chance is still a two-DIP sliver.
         let mut faint = hourly[0].clone();
