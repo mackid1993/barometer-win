@@ -390,10 +390,11 @@ impl StripFont {
     /// The ends of the Text size slider.
     ///
     /// Wide on purpose: the size is the user's to choose. Six is where
-    /// tabular digits stop being digits at 100%, and twenty-four fills the
-    /// default taskbar with one row. What a given bar can actually hold is
-    /// decided by `taskbar::Density`, not here - a size the bar has no room
-    /// for is held to what fits and the slider's caption says so.
+    /// tabular digits stop being digits at 100%, and twenty-four is two rows
+    /// in a bar seventy DIPs tall, more than Windows draws today. What a
+    /// given bar can actually hold is decided by `taskbar::Density`, not
+    /// here - a size two rows of which have no room is held to the largest
+    /// that fits, and the slider's caption says so.
     pub const MIN_SIZE_DIP: f32 = 6.0;
     pub const MAX_SIZE_DIP: f32 = 24.0;
 }

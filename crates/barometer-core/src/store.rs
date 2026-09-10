@@ -67,7 +67,7 @@ use crate::weather::models::{
 /// figure, was far too much.
 pub const DEFAULT_COLUMN_GAP_DIP: f32 = 3.0;
 
-/// What the strip's layout will accept for the gap and the padding, in DIPs.
+/// What the strip's layout will accept for the gap, in DIPs.
 ///
 /// Not the range the settings pane offers - it can be narrower - but the guard
 /// on a hand-edited file. A negative gap lays the columns out over each other
@@ -349,33 +349,33 @@ impl Store {
     }
 
     /// Reads a settings document out of bytes, touching no file.
-///
-/// What `load` does between reading and decoding, on its own, for a file
-/// the user pointed at rather than the one the store owns. An import goes
-/// through here because `load` moves a file it cannot read out of the way,
-/// which is right for its own file and unforgivable for somebody else's.
-pub fn parse(bytes: &[u8]) -> Result<Settings, String> {
-    Self::document_from(bytes).map(|document| decode(&document))
-}
-
-/// The JSON object in some bytes, or why there is not one.
-fn document_from(bytes: &[u8]) -> Result<Value, String> {
-    // Notepad, and Windows PowerShell's `Set-Content -Encoding utf8`, put a
-    // byte order mark in front of UTF-8. The parser refuses it, and a person
-    // who has just edited their settings by hand and been told the file is
-    // corrupt has been told wrong.
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    match serde_json::from_slice::<Value>(bytes) {
-        Ok(document @ Value::Object(_)) => Ok(document),
-        // Valid JSON of the wrong shape is as unusable as invalid JSON, and a
-        // zero-length file - which is what a crash mid-write used to leave
-        // before saves became atomic - lands here too.
-        Ok(_) => Err("is not a settings document".to_string()),
-        Err(why) => Err(format!("is not valid JSON: {why}")),
+    ///
+    /// What `load` does between reading and decoding, on its own, for a file
+    /// the user pointed at rather than the one the store owns. An import goes
+    /// through here because `load` moves a file it cannot read out of the way,
+    /// which is right for its own file and unforgivable for somebody else's.
+    pub fn parse(bytes: &[u8]) -> Result<Settings, String> {
+        Self::document_from(bytes).map(|document| decode(&document))
     }
-}
 
-/// Moves an unusable file out of the way and returns defaults.
+    /// The JSON object in some bytes, or why there is not one.
+    fn document_from(bytes: &[u8]) -> Result<Value, String> {
+        // Notepad, and Windows PowerShell's `Set-Content -Encoding utf8`, put a
+        // byte order mark in front of UTF-8. The parser refuses it, and a person
+        // who has just edited their settings by hand and been told the file is
+        // corrupt has been told wrong.
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+        match serde_json::from_slice::<Value>(bytes) {
+            Ok(document @ Value::Object(_)) => Ok(document),
+            // Valid JSON of the wrong shape is as unusable as invalid JSON, and a
+            // zero-length file - which is what a crash mid-write used to leave
+            // before saves became atomic - lands here too.
+            Ok(_) => Err("is not a settings document".to_string()),
+            Err(why) => Err(format!("is not valid JSON: {why}")),
+        }
+    }
+
+    /// Moves an unusable file out of the way and returns defaults.
     ///
     /// Moved, never deleted and never written over: it holds whatever the user
     /// had configured, and a corrupt file is often one bad byte away from

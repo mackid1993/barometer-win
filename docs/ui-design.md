@@ -302,7 +302,7 @@ Rules:
 - No all-caps except the strip's module labels (`CPU`, `MEM`, `NET`), which follow the macOS app.
 - Text scaling: the app honors Windows' Accessibility text size (`SPI_GETLOGICALDPIOVERRIDE` is not it; read
   `UISettings.TextScaleFactor`) for the settings window and flyouts, up to 225 %. It does not apply it to
-  the strip, which draws at the one size in 9.4; the strip has to fit the bar it is given.
+  the strip, which draws at the size chosen in 9.4; the strip has to fit the bar it is given.
 - Antialiasing: ClearType in the settings window (opaque surfaces); grayscale
   (`DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE`) on the strip and in flyouts, because both sit on translucent
   composition where ClearType fringes.
@@ -579,9 +579,10 @@ y=48  └───────────────────────�
   at `y = 28.5`, snapped to a pixel.
 - Graphs occupy the full 32 band; bars (per-core) the same; a usage bar is 6 tall centered on row 2 with
   its label on row 1.
-- The font is one size (9.4), so the line box is one size too; the band stays 32 whatever the bar's
-  height, and the two rows float toward the center rather than toward the edges. A bar too short for two
-  legible rows drops to one rather than shrinking them (`Density::choose`).
+- The font is one size, the user's (9.4), so the line box is one size too; the band stays 32 whatever the
+  bar's height, and the two rows float toward the center rather than toward the edges. A size two rows of
+  which the bar cannot hold is held down to the largest it can; there is no one-row layout
+  (`Density::choose`).
 
 ### 9.4 Type in the strip
 
@@ -595,9 +596,9 @@ type from 12 down to 9 as items are added; here the strip starts at the bottom o
 wherever the user puts it, because its width is paid for by the task buttons beside it and the shell gives
 those up a whole button at a time - a readout that grows whenever it has fewer items spends that room on
 nothing anyone asked for. The Text size slider (6-24) sets the size itself; an earlier version made it a
-ceiling on an automatic size, which confused more than it helped. Two rows wherever the bar has room for
-two at that size, one row where it does not, and a size even one row cannot hold is held to the largest that
-fits the bar, which the slider's caption reports. Nothing else steps with the item count either; the marks and
+ceiling on an automatic size, which confused more than it helped. Two rows always; a size two rows of
+which do not fit the bar is held to the largest that does, which the slider's caption reports. The strip
+never lays itself out as one row. Nothing else steps with the item count either; the marks and
 graphs are sized from the band and the text, not from a ladder.
 
 Labels (`CPU`, `MEM`, `NET`, sensor names) are drawn at 82 % alpha of the ink; values at 100 %. That single
@@ -661,12 +662,12 @@ themselves the first time the pointer crosses the strip.
 
 ### 9.8 DPI
 
-| Scale | Taskbar | Band | 12 pt text | Slot pitch (measured; typical) | Notes |
+| Scale | Taskbar | Band | 9 DIP text (the default) | Slot pitch (measured; typical) | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 100 % | 48 px | 32 px | 12 px | 42 px | |
-| 125 % | 60 px | 40 px | 15 px | 52 px | |
-| 150 % | 72 px | 48 px | 18 px | 63 px | |
-| 200 % | 96 px | 64 px | 24 px | 84 px | |
+| 100 % | 48 px | 32 px | 9 px | 42 px | |
+| 125 % | 60 px | 40 px | 11 px | 52 px | |
+| 150 % | 72 px | 48 px | 14 px | 63 px | |
+| 200 % | 96 px | 64 px | 18 px | 84 px | |
 
 The strip's HWND is `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`; on `WM_DPICHANGED` it re-measures the slot
 pitch, re-creates text formats, re-measures reserved strings, and re-requests its reservation. Fonts are

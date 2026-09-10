@@ -121,8 +121,10 @@ warn and exit rather than trying to reflow.
 26H2 restored the Windows 10-style small taskbar. Height is therefore **measured, never
 assumed**, and the strip has to lay out at whatever it gets:
 
-- Two-row items (label over value) only when the height actually admits two legible rows
-  at the current DPI. Otherwise fall back to one row.
+- Two rows, always: a label over its value. A text size the bar cannot hold two rows of
+  is held down to the largest it can. There is no one-row layout and there must never be
+  one: it turned the whole strip sideways, every label beside its number, wider than
+  anything anybody asked for.
 - The Mac app's text-size ladder, which steps type down as more widgets are enabled, is
   not ported. The strip draws at one size the user sets, 9 DIP by default, and only the row
   count follows the bar's height; `Density` in `barometer-core/src/taskbar.rs` says why.

@@ -569,24 +569,6 @@ fn module_inspector(b: &mut Builder, view: &View, id: ModuleId) {
     }
 }
 
-/// Everything about the weather: where it is read for, and how it is shown.
-#[allow(dead_code)]
-fn weather_pane(b: &mut Builder, view: &View) {
-    b.subtitle("Weather");
-    b.caption("Where the forecast is for, the units it is shown in, and how often it is fetched.");
-    b.advance(16.0);
-    weather_sections(b, view);
-}
-
-/// Everything about where temperatures come from.
-#[allow(dead_code)]
-fn sensors_pane(b: &mut Builder, view: &View) {
-    b.subtitle("Sensors Configuration");
-    b.caption("Where temperatures, fans and voltages are read from.");
-    b.advance(16.0);
-    sensors_sections(b, view);
-}
-
 /// Bytes or bits, with an example of each rather than the bare word.
 ///
 /// `network_unit` has been in the settings file, the module, the flyout and

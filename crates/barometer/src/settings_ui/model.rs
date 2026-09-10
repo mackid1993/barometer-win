@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn clamps_hold_to_the_stores_limits() {
+    fn clamps_hold_to_the_stores_and_the_fonts_limits() {
         assert_eq!(clamp_gap(-3.0), store::MIN_SPACING_DIP);
         assert_eq!(clamp_gap(1000.0), store::MAX_SPACING_DIP);
         assert_eq!(clamp_size(2.0), barometer_core::settings::StripFont::MIN_SIZE_DIP);

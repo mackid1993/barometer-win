@@ -229,7 +229,7 @@ capture harness in `scripts/capture/` (section 8), not inferred from the code.
   taking effect immediately, no restart.
 - Updater, installer, sign-in task, CI. `store.rs` tolerates a UTF-8 BOM.
 
-Tests: 386 in `barometer-app`, 201 in `barometer-core`, all passing, plus two
+Tests: 405 in `barometer-app`, 208 in `barometer-core`, all passing, plus two
 `#[ignore]`d. A few of the core tests touch the machine (disk 0's model, the
 page lists, the interface table, adapter enumeration) and are written to pass
 on a build agent with none of it.
@@ -264,11 +264,11 @@ on a build agent with none of it.
   (`SystemPageFileInformation`, hand-declared in `sys/processes.rs`).
 - `docs/ui-design.md` and `docs/ui-layouts.md` were written before the app
   existed. They have been reconciled with it - the nav, the module pages, the
-  strip's one text size, the 3 DIP gap, the slot pitch - and every section
+  strip's text size (a plain choice, 9 DIP by default), the 3 DIP gap, the slot pitch - and every section
   describing something that was never built now says so in a line rather than
   having been deleted: themes and the backplate (design §2.6, §2.7), the
-  Taskbar pane (layouts §5), the Colors card, export/import and reset
-  (layouts §4, §6). Those notes are the standing list of what the design asks
+  Taskbar pane (layouts §5), the Colors card and a reset button (layouts §4,
+  §6); settings export and import were built since. Those notes are the standing list of what the design asks
   for and the app does not do yet.
 
 ### 5.2 One that was wrong for a long time, in case it recurs

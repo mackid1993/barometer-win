@@ -69,9 +69,9 @@ pub struct Cell {
 /// The strip's items in order, as cells, from the model and the live readings.
 ///
 /// Hidden modules and empty stacks are left out, the way the strip leaves
-/// them out. A stack in `Columns` layout pairs its readings two to a column
-/// when the strip has two rows, and runs them along one row when it does not.
-pub fn cells(model: &Model, snapshot: &Snapshot, two_rows: bool) -> Vec<Cell> {
+/// them out. A stack in `Columns` layout pairs its readings two to a column,
+/// one over the other, the way every column on the strip is two rows.
+pub fn cells(model: &Model, snapshot: &Snapshot) -> Vec<Cell> {
     // Hardware temperatures, not the weather's: a stack's sensor readings are
     // drawn with `settings.sensors.temperature` a few lines below, and
     // reserving from the other setting gave the column the wrong width for
@@ -108,8 +108,8 @@ pub fn cells(model: &Model, snapshot: &Snapshot, two_rows: bool) -> Vec<Cell> {
                 // Label and value are kept apart: the renderer draws the
                 // label in the heading face with a colon after it, which is
                 // the difference between a readout and a jumble of words.
-                let columns = match (stack.layout, two_rows) {
-                    (StackLayout::Columns, true) => readings
+                let columns = match stack.layout {
+                    StackLayout::Columns => readings
                         .chunks(2)
                         .map(|pair| {
                             let (top, top_label, bottom, bottom_label) = match pair {
@@ -298,14 +298,12 @@ pub fn density(model: &Model, snapshot: &Snapshot) -> Density {
     Density::choose(snapshot.taskbar_height_dip, model.settings.font.size_dip)
 }
 
-/// The header line over the composer: "3 items · 9 pt text · two rows".
+/// The header line over the composer: "3 items · 9 pt text".
 pub fn summary(model: &Model, snapshot: &Snapshot) -> String {
     let count = model.shown_count();
     let density = density(model, snapshot);
     let items = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
-    let size = format!("{} pt text", density.text_dip.round());
-    let rows = if density.two_rows { "two rows" } else { "one row" };
-    format!("{items} · {size} · {rows}")
+    format!("{items} · {} pt text", density.text_dip.round())
 }
 
 /// Gap between a weather mark and its temperature, in DIPs. `window.rs`'s
@@ -343,7 +341,7 @@ pub fn paint(
     let mut spans = Vec::new();
 
     let density = density(model, snapshot);
-    let cells = cells(model, snapshot, density.two_rows);
+    let cells = cells(model, snapshot);
     let font = &model.settings.font;
     let scale = canvas.scale;
     let text_px = to_px(density.text_dip, scale);
@@ -427,12 +425,8 @@ pub fn paint(
             let (width, mark) = if column.badge.is_some() {
                 let mark = icon_size(bottom.cy);
                 (bottom.cx.max(held) + mark + mark_gap, mark)
-            } else if density.two_rows {
-                (top.cx.max(bottom.cx).max(held), 0)
-            } else if column.bottom.is_empty() {
-                (top.cx.max(held), 0)
             } else {
-                (bottom.cx.max(held), 0)
+                (top.cx.max(bottom.cx).max(held), 0)
             };
             columns.push(Measured {
                 width,
@@ -510,7 +504,7 @@ pub fn paint(
                 }
                 let text_y = band_px.top + (height - size.bottom.1) / 2;
                 canvas.font_text(x + mark_px + mark_gap, text_y, &wide(&column.bottom), text_font, value_ink);
-            } else if density.two_rows && !column.bottom.is_empty() {
+            } else if !column.bottom.is_empty() {
                 let line = size.top.1.max(size.bottom.1);
                 let top_y = band_px.top + (height - line * 2) / 2;
                 let (top_font, top_ink) = if column.label_top { (heading_font, label_ink) } else { (text_font, value_ink) };
@@ -557,26 +551,20 @@ pub fn paint(
     spans
 }
 
-/// What the Text size slider says under itself: the row count the size
-/// buys on this taskbar, which is the one consequence of the size that is
+/// What the Text size slider says under itself: whether the taskbar took
+/// the size as asked, which is the one consequence of the number that is
 /// not obvious from the number.
 pub fn size_caption(model: &Model, snapshot: &Snapshot) -> String {
     let asked = model.settings.font.size_dip;
     let density = density(model, snapshot);
-    if density.two_rows {
-        "Two rows fit at this size on your taskbar.".to_string()
-    } else if density.held_to_the_bar(asked) {
+    if density.held_to_the_bar(asked) {
         format!(
-            "Held to {} pt: the largest one row your {} DIP taskbar can hold.",
+            "Held to {} pt, the largest two rows fit in your {} DIP taskbar. The strip is always two rows.",
             density.text_dip.round(),
             snapshot.taskbar_height_dip.round()
         )
     } else {
-        format!(
-            "One row: two rows of {} pt do not fit a {} DIP taskbar. Smaller text brings the labels back.",
-            density.text_dip.round(),
-            snapshot.taskbar_height_dip.round()
-        )
+        "Two rows, label over value, at this size. The strip grows sideways to fit.".to_string()
     }
 }
 
@@ -603,7 +591,7 @@ mod tests {
 
     #[test]
     fn a_module_with_one_reading_is_a_label_over_a_value() {
-        let cells = cells(&model(), &Snapshot::default(), true);
+        let cells = cells(&model(), &Snapshot::default());
         let cpu = cells.iter().find(|c| c.item == StripItem::Module(ModuleId::Cpu)).unwrap();
         assert_eq!(cpu.columns.len(), 1);
         assert_eq!(cpu.columns[0].top, "CPU");
@@ -624,14 +612,14 @@ mod tests {
 
     #[test]
     fn two_readings_and_the_weather_keep_their_shapes() {
-        let cells = cells(&model(), &Snapshot::default(), true);
+        let cells = cells(&model(), &Snapshot::default());
         let net = cells.iter().find(|c| c.item == StripItem::Module(ModuleId::Network)).unwrap();
         assert!(!net.columns[0].label_top);
         assert!(net.columns[0].top.starts_with('\u{2193}'));
         // Upload on top swaps the sample the way the module swaps its lines.
         let mut swapped = model();
         swapped.settings.network_upload_first = true;
-        let cells = super::cells(&swapped, &Snapshot::default(), true);
+        let cells = super::cells(&swapped, &Snapshot::default());
         let net = cells.iter().find(|c| c.item == StripItem::Module(ModuleId::Network)).unwrap();
         assert!(net.columns[0].top.starts_with('\u{2191}'));
         assert!(net.columns[0].bottom.starts_with('\u{2193}'));
@@ -649,7 +637,7 @@ mod tests {
             ],
             ..Snapshot::default()
         };
-        let cells = cells(&model(), &snapshot, true);
+        let cells = cells(&model(), &snapshot);
         let cpu = cells.iter().find(|c| c.item == StripItem::Module(ModuleId::Cpu)).unwrap();
         assert_eq!(cpu.columns[0].bottom, "87%");
         let mem = cells.iter().find(|c| c.item == StripItem::Module(ModuleId::Memory)).unwrap();
@@ -662,7 +650,7 @@ mod tests {
         let id = m.add_stack(Some(StackMetric::CpuTotal));
         m.add_metric(id, StackMetric::GpuUtilization);
         m.add_metric(id, StackMetric::MemoryUsedPercent);
-        let cells = cells(&m, &Snapshot::default(), true);
+        let cells = cells(&m, &Snapshot::default());
         let stack = cells.iter().find(|c| c.item == StripItem::Stack(id)).unwrap();
         assert!(stack.separators);
         assert_eq!(stack.columns.len(), 2);
@@ -681,27 +669,12 @@ mod tests {
     }
 
     #[test]
-    fn a_stack_falls_to_one_row_when_the_strip_has_one_row() {
-        let mut m = model();
-        let id = m.add_stack(Some(StackMetric::CpuTotal));
-        m.add_metric(id, StackMetric::GpuUtilization);
-        let cells = cells(&m, &Snapshot::default(), false);
-        let stack = cells.iter().find(|c| c.item == StripItem::Stack(id)).unwrap();
-        assert_eq!(stack.columns.len(), 2);
-        assert_eq!(stack.columns[0].top, "24%");
-        assert_eq!(stack.columns[0].top_label, "CPU");
-        assert_eq!(stack.columns[1].top, "18%");
-        assert_eq!(stack.columns[1].top_label, "GPU");
-        assert!(stack.columns.iter().all(|c| c.bottom.is_empty()));
-    }
-
-    #[test]
     fn a_single_row_stack_runs_along_one_line_whatever_the_strip_does() {
         let mut m = model();
         let id = m.add_stack(Some(StackMetric::CpuTotal));
         m.add_metric(id, StackMetric::GpuUtilization);
         m.set_stack_layout(id, StackLayout::SingleRow);
-        let cells = cells(&m, &Snapshot::default(), true);
+        let cells = cells(&m, &Snapshot::default());
         let stack = cells.iter().find(|c| c.item == StripItem::Stack(id)).unwrap();
         assert_eq!(stack.columns.len(), 2);
         assert!(stack.columns.iter().all(|c| c.bottom.is_empty()));
@@ -712,7 +685,7 @@ mod tests {
         let mut m = model();
         let id = m.add_stack(Some(StackMetric::CpuTotal));
         m.set_stack_hides_sources(id, true);
-        let cells = cells(&m, &Snapshot::default(), true);
+        let cells = cells(&m, &Snapshot::default());
         assert!(!cells.iter().any(|c| c.item == StripItem::Module(ModuleId::Cpu)));
         assert!(cells.iter().any(|c| c.item == StripItem::Stack(id)));
     }
@@ -722,13 +695,15 @@ mod tests {
         let mut m = model();
         let id = m.add_stack(Some(StackMetric::CpuUser));
         m.add_metric(id, StackMetric::NetworkUpload);
-        let cells = cells(&m, &Snapshot::default(), false);
+        let cells = cells(&m, &Snapshot::default());
         let stack = cells.iter().find(|c| c.item == StripItem::Stack(id)).unwrap();
+        // Two readings pair into one column, one over the other.
+        assert_eq!(stack.columns.len(), 1);
         assert_eq!(stack.columns[0].top, "--");
         assert_eq!(stack.columns[0].top_label, "USR");
         // Upload is the network module's second line, which does exist.
-        assert_eq!(stack.columns[1].top_label, "UP");
-        assert!(stack.columns[1].top.starts_with('\u{2191}'));
+        assert_eq!(stack.columns[0].bottom_label, "UP");
+        assert!(stack.columns[0].bottom.starts_with('\u{2191}'));
     }
 
     #[test]

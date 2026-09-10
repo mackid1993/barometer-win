@@ -493,11 +493,10 @@ fn main() {
                     bar.edge.is_supported()
                 );
                 println!(
-                    "Layout:  {}dip {} {}, {} row(s)",
+                    "Layout (fresh-install defaults; the settings file is read later): {}dip {} {}, two rows",
                     density.text_dip,
                     font.family,
                     font.weight.raw_value(),
-                    if density.two_rows { 2 } else { 1 }
                 );
             }
             if !bar.edge.is_supported() {
@@ -1487,7 +1486,7 @@ The file it could not read has been kept, at:
 
             let density = Density::choose(height_dip, font.size_dip);
 
-            let cells = settings_ui::preview::cells(&model, &live, density.two_rows);
+            let cells = settings_ui::preview::cells(&model, &live);
             // Every stack has a panel, registered the first time it is seen
             // and fed on every tick after.
             for stack in &settings.stacks.stacks {
@@ -1552,7 +1551,6 @@ The file it could not read has been kept, at:
                 gap_dip: settings.column_gap_dip,
                 monochrome: false,
                 text_dip: density.text_dip,
-                two_rows: density.two_rows,
                 font_family: font.family.clone(),
                 // The labels' family, which is the values' family unless the
                 // user picked a second one.

@@ -93,7 +93,6 @@ pub struct StripModel {
     /// honor: the marks are designed to stay distinguishable without it.
     pub monochrome: bool,
     pub text_dip: f32,
-    pub two_rows: bool,
     pub font_family: String,
     /// The family the labels are drawn in. Equal to `font_family` unless the
     /// user chose a second one.
@@ -734,7 +733,7 @@ unsafe fn content_width(hwnd: HWND, state: &mut StripState) -> i32 {
             width += gap;
         }
         width +=
-            column_extents(dc, column, state.model.two_rows, dpi as f32 / 96.0, mark_px, heading)
+            column_extents(dc, column, dpi as f32 / 96.0, mark_px, heading)
                 .0;
     }
 
@@ -750,7 +749,6 @@ unsafe fn content_width(hwnd: HWND, state: &mut StripState) -> i32 {
 unsafe fn column_extents(
     dc: windows_sys::Win32::Graphics::Gdi::HDC,
     column: &Column,
-    two_rows: bool,
     scale: f32,
     mark_px: i32,
     heading_font: HFONT,
@@ -805,12 +803,8 @@ unsafe fn column_extents(
         // so the column is the number plus that room. Without it the mark is
         // clipped by whatever column comes next.
         bottom_size.cx.max(held) + mark_px + (MARK_GAP_DIP * scale).round() as i32
-    } else if two_rows {
-        top_size.cx.max(bottom_size.cx).max(held)
-    } else if column.bottom.is_empty() {
-        top_size.cx.max(held)
     } else {
-        bottom_size.cx.max(held)
+        top_size.cx.max(bottom_size.cx).max(held)
     };
     (width, top_size, bottom_size)
 }
@@ -1119,7 +1113,7 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
         let top = wide_no_nul(&column.top);
         let bottom = wide_no_nul(&column.bottom);
         let (column_width, top_size, bottom_size) =
-            column_extents(memory_dc, column, state.model.two_rows, scale, mark_px, heading_font);
+            column_extents(memory_dc, column, scale, mark_px, heading_font);
 
         if let Some(condition) = column.badge {
             // The weather column: the condition as a Segoe Fluent Icons mark,
@@ -1161,7 +1155,7 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
             SelectObject(memory_dc, previous);
 
             TextOutW(memory_dc, text_x, text_y, text.as_ptr(), text.len() as i32);
-        } else if state.model.two_rows {
+        } else {
             // Two rows sharing the strip's vertical center, with the leading
             // between them coming from the font rather than a constant.
             let line = top_size.cy.max(bottom_size.cy);
@@ -1185,17 +1179,6 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
             }
             let value_x = draw_label(memory_dc, x, top_y + line, &column.bottom_label, heading_font);
             TextOutW(memory_dc, value_x, top_y + line, bottom.as_ptr(), bottom.len() as i32);
-        } else {
-            // One row: the value, with the label dropped rather than crushed.
-            let (text, label) = if column.bottom.is_empty() {
-                (&top, &column.top_label)
-            } else {
-                (&bottom, &column.bottom_label)
-            };
-            let size = measure(memory_dc, text);
-            let y = (height - size.cy) / 2;
-            let value_x = draw_label(memory_dc, x, y, label, heading_font);
-            TextOutW(memory_dc, value_x, y, text.as_ptr(), text.len() as i32);
         }
 
         // Where this column ended up, for the click that opens its panel.
@@ -1686,7 +1669,7 @@ unsafe fn content_extent(
             total += gap;
         }
         total +=
-            column_extents(dc, column, state.model.two_rows, scale, mark_px, heading_font).0;
+            column_extents(dc, column, scale, mark_px, heading_font).0;
     }
     total
 }
@@ -1997,15 +1980,15 @@ mod tests {
     use super::*;
 
     /// Every weight the picker offers has to reach the taskbar as a
-    /// different face, at the size a taskbar actually draws.
+    /// different face, at a size where faces can differ at all.
     ///
     /// This is the test the font settings never had. GDI never refuses a
     /// weight: asked for one the family has no face for it silently draws
     /// the nearest, so "Medium" on Segoe UI was Regular pixel for pixel and
-    /// the setting looked inert. Twelve DIPs at 144 DPI is eighteen real
-    /// pixels, which is what this measures at - at ten the hinting snaps
-    /// regular and semibold onto the same stems and even a correct build
-    /// cannot tell them apart.
+    /// the setting looked inert. Measured at eighteen pixels - twelve DIPs
+    /// at 144 DPI, larger than the strip's default - because at ten the
+    /// hinting snaps regular and semibold onto the same stems and even a
+    /// correct build cannot tell them apart.
     #[test]
     fn every_weight_the_picker_offers_reaches_the_taskbar_as_a_different_face() {
         let solid = |weight| ink_detail(weight, "Segoe UI", 18.0, true).0;

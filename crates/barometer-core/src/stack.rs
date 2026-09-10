@@ -531,7 +531,10 @@ pub fn reserved_for_kind(kind: &SensorKind, units: UnitPrefs) -> &'static str {
         SensorKind::Load | SensorKind::Level | SensorKind::Control | SensorKind::Humidity => "100%",
         SensorKind::Data => "9999GB",
         SensorKind::SmallData => "9999MB",
-        SensorKind::Throughput => "999 MB/s",
+        // Rendered through `format::rate`, whose three-figure formatting
+        // prints 1024 at the top of a unit, as the disk and network columns
+        // reserve for.
+        SensorKind::Throughput => "1024 MB/s",
         SensorKind::Energy => "99999mWh",
         SensorKind::Noise => "99dBA",
         SensorKind::Flow => "999.9L/h",

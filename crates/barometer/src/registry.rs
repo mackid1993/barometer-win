@@ -16,7 +16,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE};
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteKeyW, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_SZ,
@@ -204,6 +204,3 @@ pub fn delete_entry(entry: &str) -> bool {
     status == ERROR_SUCCESS
 }
 
-/// Unused today, kept honest: the type the shell hands back for a key handle.
-#[allow(dead_code)]
-type ShellHandle = HANDLE;

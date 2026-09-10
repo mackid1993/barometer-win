@@ -114,9 +114,8 @@ Origin: content pane (x=0 at window x=176). Width 704; paddings 24. Shown at 880
 
 ### 2.1 Header
 
-- Title "Strip" (Subtitle) at y 24. Caption at y 56: `"{n} items · {size} pt text · {rows}"` - the size is
-  the user's Text size and the rows are "two rows" or "one row", whichever the bar's height admits at that
-  size (`preview::summary`).
+- Title "Strip" (Subtitle) at y 24. Caption at y 56: `"{n} items · {size} pt text"` - the size is the
+  user's Text size, held down where two rows of it would not fit the bar (`preview::summary`).
   `tnum`, updates as toggles change. This is the macOS sizing summary, made permanent instead of appearing
   in an apply bar; the graphics percentage it used to carry went with the size ladder.
 
@@ -560,7 +559,7 @@ preview and on the taskbar", and holds:
 | Text | Font | The family the strip draws in |
 | | Heading font | A face of its own for the names on the strip, or the same family. On Windows a weight is often a family - Segoe UI Semibold is its own - so a heading can be a different face rather than only a heavier one |
 | | Weight | Headings and values side by side, one dropdown each, offering only the weights that family has faces for |
-| | Text size | Slider 6-24, **default 9**; caption says whether two rows fit at that size on this taskbar, or that the bar held it down |
+| | Text size | Slider 6-24, **default 9**; caption says the strip is two rows at that size, or that the bar held it down to the largest two rows fit |
 | Spacing | Between columns | Slider 0–24, **default 3** |
 
 The Theme tiles, the Colors card and the graph-opacity row were not built (`ui-design.md` §2.6), and
@@ -777,8 +776,8 @@ never ships.
 
 ### 8.1 Anatomy at 100 %
 
-Drawn at the 12 DIP gap this document originally specified. **The gap is now 3 by default and the end
-padding 0**, and the slack is not spread into the gaps: the content is centered in the reserved region, so
+Drawn at the 12 DIP gap this document originally specified. **The gap is now 3 by default and there is no
+end padding**, and the slack is not spread into the gaps: the content is centered in the reserved region, so
 the slack falls at the two ends as margin (`ui-design.md` §9.2, §9.6). The shape is right; halve the
 horizontal numbers twice and it is today's strip.
 
@@ -818,7 +817,8 @@ A stack of three readings (CPU · MEM · NET):
 ```
 
 Arrows are the U+2193/U+2191 glyphs of the text font at the item's size, not icons, so they sit on the
-baseline and take the ink. Units are abbreviated ("K", "M"), the strip being at the bottom of the ladder.
+baseline and take the ink. Units are written in full ("KB/s", "MB/s"), as `format::rate` prints them; the
+"K" and "M" in the one-line sketch are the macOS abbreviations and were not adopted.
 
 ### 8.3 Widths and slots at four scales
 
@@ -835,7 +835,8 @@ reasoning is what this table is for.
 
 Slot pitch is seeded at 42 and then measured from where the placeholders actually landed, never assumed;
 the table shows typical values. Slack never exceeds one slot and is always absorbed inside the strip,
-split between its two ends (design §9.2). Text px is `TEXT_DIP` at the scale factor.
+split between its two ends (design §9.2). Text px is the default 9 DIP (`TEXT_DIP`) at the scale factor; a
+larger Text size scales the same way.
 
 ### 8.4 States
 
