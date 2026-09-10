@@ -221,6 +221,17 @@ impl Content for StackContent {
         StripItem::Stack(self.id)
     }
 
+    /// The showing tab's, since that is the content being drawn. A stack
+    /// of readings none of which graphs a timeline wants nothing.
+    fn history_span(&self) -> i64 {
+        let Some(module) = self.selected_module() else { return 0 };
+        self.panels
+            .iter()
+            .find(|panel| panel.module() == module)
+            .map(|panel| panel.history_span())
+            .unwrap_or(0)
+    }
+
     fn accent(&self) -> Accent {
         match self.selected_module() {
             Some(module) => Accent::signature(module),

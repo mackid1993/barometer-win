@@ -227,11 +227,16 @@ fn gpu_from_sensors(
 /// any tray change at a sixty-millisecond cadence, so one icon appearing made
 /// eight of these. Now the expensive half is built only while there is a
 /// window open to show it in.
+/// `with_sensors` decides whether the machine's sensor list is carried at
+/// all. See `StacksSettings::needs_the_sensor_list`, which is most of the
+/// answer; the other halves are a settings window showing its pin picker
+/// and a panel with a reader for the list.
 fn snapshot(
     modules: &[Box<dyn Module>],
     height_dip: f32,
     settings: &barometer_core::store::Settings,
     for_settings: bool,
+    with_sensors: bool,
 ) -> settings_ui::Snapshot {
     use barometer_core::sensors::health::{self, Health};
     use settings_ui::model::SensorSource;
@@ -239,11 +244,14 @@ fn snapshot(
     // Two questions, not one. The list is what the module last read; the state
     // is what the worker last published. A source can be running and have found
     // nothing, which is not the same as there being no source.
-    let sensors = modules
-        .iter()
-        .find(|module| module.id() == barometer_core::ModuleId::Sensors)
-        .map(|module| module.sensors())
-        .unwrap_or_default();
+    let sensors = match with_sensors {
+        true => modules
+            .iter()
+            .find(|module| module.id() == barometer_core::ModuleId::Sensors)
+            .map(|module| module.sensors())
+            .unwrap_or_default(),
+        false => Vec::new(),
+    };
 
     let sensor_source = match if for_settings { health::health() } else { Health::Unknown } {
         Health::Providing { source, sensors, .. } => {
@@ -437,7 +445,11 @@ fn main() {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        while open.is_open() {
+        // Gone means off the screen, not destroyed. The close button hides the
+        // window so that the strip can bring it back instantly, which under
+        // this flag left nothing to close it: the diagnostic polled a window
+        // nobody could see for as long as the machine stayed up.
+        while open.is_visible() {
             std::thread::sleep(Duration::from_millis(120));
         }
         return;
@@ -583,22 +595,6 @@ fn save_settings(store: Option<&mut barometer_core::store::Store>, settings: &ba
 
 The changes you have just made are in effect now, but they will be gone the next time Barometer starts. This is usually a read-only settings file or another program holding it open."
     ));
-}
-
-/// A timeline for a panel to draw, or nothing when no panel is open.
-///
-/// The published snapshot used to carry a copy of the whole day either way.
-/// Each timeline saturates at 86,400 samples of 16 bytes, so that was three
-/// allocations of about 1.4 MB, three copies of the same, and three frees,
-/// every second - for graphs that in the ordinary case nobody is looking at.
-fn history_for(
-    open: bool,
-    history: &VecDeque<barometer_app::flyout::cpu::Sample>,
-) -> Vec<barometer_app::flyout::cpu::Sample> {
-    match open {
-        true => history.iter().copied().collect(),
-        false => Vec::new(),
-    }
 }
 
 /// Now, in Unix seconds, or None if the clock is before 1970.
@@ -772,7 +768,14 @@ The file it could not read has been kept, at:
     // What the weekly check found, filled by a thread of its own.
     let weekly: std::sync::Arc<std::sync::Mutex<Option<update::Outcome>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
-    let mut weekly_running = false;
+    // Whether that thread is still out, cleared by the thread itself
+    // whatever it found - the same shape as `public_ip_busy` below, and for
+    // the same reason. A flag cleared only when an answer arrives is a flag
+    // that stays set forever the first time the network is not there, and
+    // the weekly check is then off for the rest of the run with nothing to
+    // show that it is: the failure is deliberately silent, so nobody would
+    // ever find out.
+    let weekly_busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     const FORCE_GAP: Duration = Duration::from_millis(60);
     /// How long after a tray event the readout keeps riding the tray.
     const FOLLOW_FOR: Duration = Duration::from_millis(500);
@@ -912,7 +915,15 @@ The file it could not read has been kept, at:
         match strip.take_command() {
             Some(window::Command::Quit) => return,
             Some(window::Command::OpenSettings) => match settings_window.as_mut() {
-                Some(open) => open.show(),
+                Some(open) => {
+                    open.show();
+                    // What `notify_panel_opened` does for the flyouts, for the
+                    // same reason: the preview and the pickers are built only
+                    // while the window is visible, so the pass before this one
+                    // skipped every one of them and the window would open on
+                    // that snapshot.
+                    next_sample = Instant::now();
+                }
                 None => {
                     settings_window = Some(settings_ui::SettingsWindow::open(
                         settings_ui::Model::from_settings(settings.clone()),
@@ -943,7 +954,12 @@ The file it could not read has been kept, at:
                     // general one the user then has to search.
                     let pane = settings_ui::ui::Pane::Module(module);
                     match settings_window.as_mut() {
-                        Some(open) => open.show_pane(pane),
+                        Some(open) => {
+                            open.show_pane(pane);
+                            // As above: a hidden window is fed nothing, so the
+                            // pass that fills it has to happen now.
+                            next_sample = Instant::now();
+                        }
                         None => {
                             settings_window = Some(settings_ui::SettingsWindow::open_at(
                                 settings_ui::Model::from_settings(settings.clone()),
@@ -1049,7 +1065,6 @@ The file it could not read has been kept, at:
                 }
 
                 if let Some(found) = weekly.lock().ok().and_then(|mut slot| slot.take()) {
-                    weekly_running = false;
                     if let Some(version) = offer_update(&found, settings.skipped_update.as_deref()) {
                         settings.skipped_update = version;
                         save_settings(store.as_mut(), &settings);
@@ -1060,8 +1075,7 @@ The file it could not read has been kept, at:
                 }
                 let due_now =
                     update::due(settings.check_for_updates, settings.last_update_check, unix_now());
-                if !weekly_running && due_now {
-                    weekly_running = true;
+                if due_now && !weekly_busy.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     // Stamped and saved before the request rather than after,
                     // so a machine with no network does not ask again every
                     // second for the rest of the week.
@@ -1075,6 +1089,7 @@ The file it could not read has been kept, at:
                         open.adopt(settings.clone());
                     }
                     let slot = std::sync::Arc::clone(&weekly);
+                    let busy = std::sync::Arc::clone(&weekly_busy);
                     thread::spawn(move || {
                         // A failure is nobody's business: this check was not
                         // asked for, and a dialog about a network that is not
@@ -1085,6 +1100,10 @@ The file it could not read has been kept, at:
                                 *slot = Some(found);
                             }
                         }
+                        // Cleared on the way out whatever happened, so the
+                        // next week's check is not blocked by this week's
+                        // silence.
+                        busy.store(false, std::sync::atomic::Ordering::Release);
                     });
                 }
             }
@@ -1143,6 +1162,11 @@ The file it could not read has been kept, at:
                 // Asked once and reused: it decides whether several of the
                 // panels' more expensive fields are worth building at all.
                 let panels_open = flyout.is_open();
+                // How far back the panel that is showing actually reaches.
+                // Zero for the panels that draw no timeline, which is five of
+                // the seven, and five minutes for a processor panel nobody has
+                // moved the picker on - against the day the strip keeps.
+                let history_span = flyout.history_span();
                 if panels_were_open && !panels_open {
                     // The last panel has closed. The per-process figures are
                     // gathered by asking the kernel to keep extended
@@ -1241,7 +1265,7 @@ The file it could not read has been kept, at:
                                 handles: summary.as_ref().map(|s| s.handles),
                                 top,
                                 measuring,
-                                history: history_for(panels_open, &cpu_history),
+                                history: cpu::newest_span(&cpu_history, history_span),
                             });
                         }
                         barometer_core::ModuleId::Gpu => {
@@ -1260,7 +1284,7 @@ The file it could not read has been kept, at:
                                 name: chosen,
                                 load,
                                 unit: settings.sensors.temperature,
-                                history: history_for(panels_open, &gpu_history),
+                                history: cpu::newest_span(&gpu_history, history_span),
                                 ..Default::default()
                             };
                             if flyout.is_open() {
@@ -1321,7 +1345,7 @@ The file it could not read has been kept, at:
                             if let Some(value) = snapshot.commit_fraction() {
                                 cpu::remember(&mut memory_history, cpu::Sample { at_unix: now_unix, value });
                             }
-                            snapshot.history = history_for(panels_open, &memory_history);
+                            snapshot.history = cpu::newest_span(&memory_history, history_span);
                             memory_feed.publish(snapshot);
                         }
                         barometer_core::ModuleId::Disks => {
@@ -1536,12 +1560,33 @@ The file it could not read has been kept, at:
             // anything, and the sensor helper would be respawned, which costs
             // a second and a process.
             // Only while there is a window to draw them in - see `snapshot`.
-            let for_settings = settings_window.as_ref().is_some_and(|open| open.is_open());
-            let live = snapshot(&modules, height_dip, &settings, for_settings);
+            // Visible, not merely existing: the window's close button hides it
+            // rather than destroying it, so `is_open` is true for the rest of
+            // the run once Settings has been opened once, and the expensive
+            // half was being built every second forever for nobody. Reopening
+            // pulls the next sample forward, so the preview is still current
+            // the moment the window comes back.
+            let for_settings = settings_window.as_ref().is_some_and(|open| open.is_visible());
+            // The sensor list is the largest thing a tick clones, and most
+            // ticks have nobody to hand it to.
+            let with_sensors =
+                for_settings || flyout.is_open() || settings.stacks.needs_the_sensor_list();
+            let live = snapshot(&modules, height_dip, &settings, for_settings, with_sensors);
 
             let density = Density::choose(height_dip, font.size_dip);
 
             let cells = settings_ui::preview::cells(&model, &live);
+            // A stack the user deleted is gone for good - `StacksSettings`
+            // retires an identity rather than handing it out again - so its
+            // feed and the panel's content for it are dead weight, and the
+            // feed is holding the sensor list it was last published.
+            stack_feeds.retain(|id, _| {
+                let kept = settings.stacks.stacks.iter().any(|stack| stack.id == *id);
+                if !kept {
+                    flyout.retire(barometer_core::stack::StripItem::Stack(*id));
+                }
+                kept
+            });
             // Every stack has a panel, registered the first time it is seen
             // and fed on every tick after.
             for stack in &settings.stacks.stacks {
@@ -1558,7 +1603,14 @@ The file it could not read has been kept, at:
                     id: stack.id,
                     name: stack.display_name().to_string(),
                     entries: stack.metrics.clone(),
-                    sensors: live.sensors.clone(),
+                    // Only when there is a panel to read them. A stack's
+                    // panel is the only thing that draws these, and the
+                    // opening of one pulls the next tick forward - the same
+                    // wake every other panel-only field here relies on.
+                    sensors: match flyout.is_open() {
+                        true => live.sensors.clone(),
+                        false => Vec::new(),
+                    },
                 });
             }
             column_items.clear();
@@ -1589,7 +1641,7 @@ The file it could not read has been kept, at:
                 // source is doing. Only while the window is up: building it
                 // costs a clone of every sensor, and nothing reads it when
                 // there is nowhere to show it.
-                if open.is_open() {
+                if for_settings {
                     open.publish(live.clone());
                 }
                 if let Some(changed) = open.take_changes() {
@@ -1950,6 +2002,10 @@ fn run_marks_sheet(path: &std::path::Path) {
             CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
         if bitmap.is_null() || bits.is_null() {
             eprintln!("Could not create the bitmap.");
+            // A section with no pixels behind it is still an object to delete.
+            if !bitmap.is_null() {
+                DeleteObject(bitmap as _);
+            }
             DeleteDC(dc);
             return;
         }

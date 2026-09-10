@@ -42,7 +42,7 @@ pub mod appicon;
 pub mod ui;
 pub mod weather;
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -221,6 +221,18 @@ pub trait Content: Send {
     fn focus_sensor(&mut self, id: Option<&str>) {
         let _ = id;
     }
+
+    /// How far back this content's history graph reaches, in seconds.
+    ///
+    /// Zero for the six contents that draw no timeline, which is most of
+    /// them. The strip's thread keeps a whole day of samples and used to
+    /// copy all three of its timelines into the published snapshot
+    /// whenever *any* panel was open - four megabytes a second to draw a
+    /// five-minute graph, or none at all for the weather. This is what it
+    /// asks instead.
+    fn history_span(&self) -> i64 {
+        0
+    }
 }
 
 /// A request from the strip's thread to the panel's.
@@ -234,6 +246,11 @@ pub(crate) struct Request {
 
 /// What the two threads share.
 pub(crate) struct Shared {
+    /// The longest history span the open panel wants, in seconds, or zero
+    /// while nothing is open. Written by the panel's thread whenever it
+    /// lays a page out; read by the strip's tick to decide how much of
+    /// each timeline is worth copying. See `Content::history_span`.
+    pub history_span: AtomicI64,
     /// The panel's handle as an integer so it can cross threads; zero while
     /// there is no window.
     pub hwnd: AtomicIsize,
@@ -241,6 +258,14 @@ pub(crate) struct Shared {
     pub open_item: Mutex<Option<StripItem>>,
     /// Contents registered but not yet adopted by the panel's thread.
     pub pending: Mutex<Vec<Box<dyn Content>>>,
+    /// Items whose content the panel should let go of, the other way
+    /// round from `pending`. A stack the user deleted is the only thing
+    /// that ever asks: stack identities are retired and never handed out
+    /// again, so its content would otherwise sit in the panel's list for
+    /// the life of the process, holding the last snapshot it was
+    /// published - a copy of every sensor on the machine - and lengthening
+    /// the scan every open does.
+    pub retiring: Mutex<Vec<StripItem>>,
     pub request: Mutex<Option<Request>>,
     pub commands: Mutex<Vec<Command>>,
 }
@@ -325,10 +350,12 @@ impl Default for Flyout {
 impl Flyout {
     pub fn new() -> Flyout {
         let shared = Arc::new(Shared {
+            history_span: AtomicI64::new(0),
             hwnd: AtomicIsize::new(0),
             open: AtomicBool::new(false),
             open_item: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
+            retiring: Mutex::new(Vec::new()),
             request: Mutex::new(None),
             commands: Mutex::new(Vec::new()),
         });
@@ -346,6 +373,15 @@ impl Flyout {
     pub fn register(&self, content: Box<dyn Content>) {
         if let Ok(mut pending) = self.shared.pending.lock() {
             pending.push(content);
+        }
+        self.shared.post(WM_APP_REGISTER);
+    }
+
+    /// Lets go of an item's content. The panel drops it on its own
+    /// thread, and closes first if that is the panel showing.
+    pub fn retire(&self, item: StripItem) {
+        if let Ok(mut retiring) = self.shared.retiring.lock() {
+            retiring.push(item);
         }
         self.shared.post(WM_APP_REGISTER);
     }
@@ -397,6 +433,12 @@ impl Flyout {
 
     pub fn is_open(&self) -> bool {
         self.shared.open.load(Ordering::Acquire)
+    }
+
+    /// How far back the open panel's history graph reaches, in seconds;
+    /// zero while nothing that draws one is open.
+    pub fn history_span(&self) -> i64 {
+        self.shared.history_span.load(Ordering::Acquire)
     }
 
     /// Which item's panel is showing, so the strip can draw that item's

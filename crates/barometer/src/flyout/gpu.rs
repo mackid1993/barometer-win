@@ -280,6 +280,11 @@ impl Content for GpuContent {
         ModuleId::Gpu
     }
 
+    /// As the processor panel: its own picker.
+    fn history_span(&self) -> i64 {
+        self.flyout.range.seconds()
+    }
+
     fn build(&mut self, cx: &Context) -> Page {
         if let Some(snapshot) = latest(&self.slot) {
             self.flyout.snapshot = snapshot;

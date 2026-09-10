@@ -21,6 +21,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 /// Create this in %LOCALAPPDATA%Barometer to switch tracing on. Local rather
@@ -48,7 +49,14 @@ fn destination() -> Option<&'static PathBuf> {
             // console modes from a terminal where it was already the habit.
             let asked = folder.join(SWITCH).exists()
                 || std::env::var_os("BAROMETER_TRACE").is_some();
-            asked.then(|| folder.join(LOG))
+            let path = asked.then(|| folder.join(LOG))?;
+            // What a previous run left is part of the budget, or a log already
+            // at the cap would be allowed to grow to twice it before the count
+            // this run keeps caught up.
+            if let Ok(existing) = std::fs::metadata(&path) {
+                WRITTEN.store(existing.len(), Ordering::Relaxed);
+            }
+            Some(path)
         })
         .as_ref()
 }
@@ -58,6 +66,18 @@ pub fn on() -> bool {
     destination().is_some()
 }
 
+/// How large the log is allowed to get before the previous one is thrown away
+/// and a fresh one started.
+///
+/// The strip writes two or three lines a second, so an unrotated trace is
+/// something like twenty megabytes a day and does not stop: `trace.on` is a
+/// file somebody creates to catch a bug and then forgets about, and the whole
+/// reason it is a file rather than an environment variable is that it outlives
+/// the session that made it. Two generations of this is a quarter of an hour of
+/// history at that rate, which is far more than any of these traces has needed,
+/// and it is bounded.
+const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
 /// Appends one line, with the time it happened.
 ///
 /// Best effort throughout. A trace that panicked, or that stopped the strip
@@ -66,8 +86,31 @@ pub fn on() -> bool {
 pub fn line(text: &str) {
     let Some(path) = destination() else { return };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else { return };
-    let _ = writeln!(file, "{} {text}", stamp());
+    let line = format!("{} {text}\n", stamp());
+    let _ = file.write_all(line.as_bytes());
+    // Counted rather than measured. `metadata` would be a second call on every
+    // line for an answer that only changes at one known moment, and the size at
+    // startup is the only one this cannot work out for itself.
+    let written = WRITTEN.fetch_add(line.len() as u64, Ordering::Relaxed) + line.len() as u64;
+    if written >= MAX_BYTES {
+        WRITTEN.store(0, Ordering::Relaxed);
+        // Closed first: a rename with the handle still open is refused on
+        // Windows, and the next line would then go on extending the file this
+        // was meant to retire.
+        drop(file);
+        // Whatever was kept last time goes. One generation back, not a numbered
+        // series: a trace nobody has looked at in two rotations is not going to
+        // be looked at.
+        let _ = std::fs::remove_file(path.with_extension("log.1"));
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
 }
+
+/// Bytes written to the current log by this process, for the cap above.
+///
+/// Seeded from whatever a previous run left, so a log already at the limit is
+/// rotated on the first line rather than doubling.
+static WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 /// Milliseconds since the machine started.
 ///

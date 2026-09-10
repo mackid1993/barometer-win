@@ -739,6 +739,37 @@ impl StacksSettings {
         self.stacks.retain(|s| s.id != id);
     }
 
+    /// Whether any stack carries a reading only the sensor source can give.
+    ///
+    /// The strip's tick asks this before cloning the machine's whole sensor
+    /// list - a hundred and forty-four readings of three strings apiece on
+    /// the author's machine - into the snapshot the columns are built from.
+    /// Nothing else on the strip reads that list: the Sensors column draws
+    /// its module's own readout. With no such reading anywhere the clone was
+    /// several hundred allocations a second for nobody.
+    ///
+    /// The graphics power and temperature count, and that is the part that
+    /// is easy to get wrong. Windows' engine counters carry neither, so the
+    /// graphics module cannot answer for them and the tick falls back to the
+    /// sensor list - see `gpu_from_sensors`. Leaving them out would draw a
+    /// dash where a wattage should be.
+    ///
+    /// Every stack, not only the enabled ones, because the value list a tick
+    /// builds is built for all of them. Saying yes too often costs a clone;
+    /// saying no wrongly costs a reading.
+    pub fn needs_the_sensor_list(&self) -> bool {
+        self.stacks.iter().any(|stack| {
+            stack.metrics.iter().any(|entry| {
+                matches!(
+                    entry.metric,
+                    StackMetric::Sensor(_)
+                        | StackMetric::GpuPower
+                        | StackMetric::GpuTemperature
+                )
+            })
+        })
+    }
+
     /// Modules that must keep sampling for the enabled stacks.
     pub fn required_modules(&self) -> Vec<ModuleId> {
         let mut modules: Vec<ModuleId> = self
@@ -900,6 +931,40 @@ mod tests {
             StackMetric::WeatherTemperature.reserved_value(celsius),
             StackMetric::WeatherTemperature.reserved_value(fahrenheit)
         );
+    }
+
+    #[test]
+    fn the_sensor_list_is_wanted_only_by_a_stack_that_carries_a_reading_from_it() {
+        let mut stacks = StacksSettings::default();
+        assert!(!stacks.needs_the_sensor_list(), "no stacks, nothing to read it");
+
+        let id = stacks.add();
+        let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
+        stack.metrics = vec![StackEntry::new(StackMetric::CpuTotal)];
+        assert!(!stacks.needs_the_sensor_list(), "a processor reading is the processor's");
+
+        // The trap. Windows' engine counters carry neither figure, so the
+        // graphics module cannot answer and the tick reads them out of the
+        // sensor list instead.
+        for metric in [StackMetric::GpuPower, StackMetric::GpuTemperature] {
+            let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
+            stack.metrics = vec![StackEntry::new(metric)];
+            assert!(stacks.needs_the_sensor_list(), "only the sensor source has this one");
+        }
+
+        let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
+        stack.metrics = vec![StackEntry::new(StackMetric::Sensor("/intelcpu/0/temperature/18".into()))];
+        assert!(stacks.needs_the_sensor_list());
+
+        // A disabled stack still counts: the values a tick builds are built
+        // for every stack, not only the shown ones.
+        let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
+        stack.is_enabled = false;
+        assert!(stacks.needs_the_sensor_list());
+
+        // And it goes with the stack.
+        stacks.remove(id);
+        assert!(!stacks.needs_the_sensor_list());
     }
 
     #[test]

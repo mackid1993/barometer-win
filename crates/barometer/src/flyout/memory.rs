@@ -27,7 +27,8 @@ use barometer_core::format;
 use barometer_core::ModuleId;
 
 use super::cpu::{
-    chip_left, history_graph, latest, process_name_and_share, timeline_span, Sample, BAR_H, DASH, NEUTRAL,
+    chip_left, history_graph, latest, process_name_and_share, timeline_span, HistoryRange, Sample,
+    BAR_H, DASH, NEUTRAL,
     PROCESS_ROW_H,
 };
 use super::ui::{Accent, Builder, Id, Ink, Kind, Measure, Style};
@@ -419,6 +420,15 @@ impl MemoryContent {
 impl Content for MemoryContent {
     fn module(&self) -> ModuleId {
         ModuleId::Memory
+    }
+
+    /// The whole day, because this panel has no range picker: it draws
+    /// `timeline_span` of whatever it is handed, edge to edge, so the
+    /// span it is given *is* the span it shows. Handing it less would
+    /// silently shorten the graph rather than save anything the user
+    /// agreed to lose.
+    fn history_span(&self) -> i64 {
+        HistoryRange::TwentyFourHours.seconds()
     }
 
     fn build(&mut self, cx: &Context) -> Page {

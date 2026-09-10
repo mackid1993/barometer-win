@@ -226,14 +226,34 @@ struct FontKey {
     weight: i32,
 }
 
+/// How many faces are kept before the least recently used one goes.
+///
+/// A panel and the settings window between them draw from a ramp of about a
+/// dozen faces, so this is never reached by ordinary use. What reaches it is
+/// the font picker: the strip preview redraws in whatever family the list is
+/// sitting on, so arrowing down four hundred installed families made four
+/// hundred live GDI objects that stood until the window was destroyed - and
+/// the window is only ever hidden. The per-process quota is ten thousand.
+const MAX_FONTS: usize = 64;
+
+/// One cached face, with the pass it was last handed out on.
+struct CachedFont {
+    key: FontKey,
+    font: HFONT,
+    /// The value of `FontCache::pass` when this was last asked for.
+    used: u64,
+}
+
 /// Fonts, made once per (family, size, weight) and kept.
 ///
 /// A GDI font is a kernel handle and the desktop has a finite number of
 /// them; a window that makes one per string per paint exhausts them in an
 /// afternoon. Cleared on a DPI change, which is the only time the pixel sizes
-/// all move at once.
+/// all move at once, and trimmed to `MAX_FONTS` at the start of every pass.
 pub struct FontCache {
-    fonts: Vec<(FontKey, HFONT)>,
+    fonts: Vec<CachedFont>,
+    /// Bumped once per `Canvas`, which is once per layout or paint.
+    pass: u64,
     /// The application icon at the one size it was last drawn at. Kept
     /// beside the fonts because it has the same life: decoded from the
     /// executable's resources per size, and stale when the DPI changes.
@@ -253,6 +273,7 @@ impl FontCache {
         let has = |name: &str| families.iter().any(|f| f == name);
         FontCache {
             fonts: Vec::new(),
+            pass: 0,
             icon: None,
             installed: families.to_vec(),
             variable: has("Segoe UI Variable Text"),
@@ -302,11 +323,23 @@ impl FontCache {
     /// the user chose, resolved to the named instance for the weight when
     /// the machine has one.
     pub fn get(&mut self, family: &str, px: i32, weight: i32) -> HFONT {
-        let family = instance_family(family, weight, &self.installed);
-        let key = FontKey { family: family.clone(), px, weight };
-        if let Some((_, font)) = self.fonts.iter().find(|(k, _)| *k == key) {
-            return *font;
+        // Keyed on what was asked for, not on what it resolves to, so a hit
+        // costs one comparison. `instance_family` lowercases every family on
+        // the machine looking for a named instance - several hundred string
+        // allocations - and it was being run for every word drawn in a panel,
+        // where the answer cannot change: the installed list is fixed for the
+        // life of a cache, so the resolution is a pure function of this key.
+        let pass = self.pass;
+        if let Some(cached) = self
+            .fonts
+            .iter_mut()
+            .find(|c| c.key.px == px && c.key.weight == weight && c.key.family == family)
+        {
+            cached.used = pass;
+            return cached.font;
         }
+        let key = FontKey { family: family.to_string(), px, weight };
+        let family = instance_family(family, weight, &self.installed);
         // SAFETY: a zeroed LOGFONTW filled in below.
         let font = unsafe {
             let mut logical: LOGFONTW = std::mem::zeroed();
@@ -325,14 +358,62 @@ impl FontCache {
             }
             CreateFontIndirectW(&logical)
         };
-        self.fonts.push((key, font));
+        self.fonts.push(CachedFont { key, font, used: pass });
         font
     }
 
+    /// Starts a pass and gives back anything beyond the ceiling.
+    ///
+    /// Called from `Canvas::new` and nowhere else, and that is what makes it
+    /// safe. A caller holds a face across a whole draw - `preview::strip`
+    /// takes its text and heading faces at the top and uses them to the
+    /// bottom - so a font must never be deleted while a pass is running. At
+    /// the start of one, nothing has been handed out yet.
+    ///
+    /// Least recently used goes first, counted in passes rather than in
+    /// calls: everything a frame draws with is equally recent, and what a
+    /// frame did not touch is what the picker left behind.
+    pub fn begin_pass(&mut self) {
+        self.pass = self.pass.wrapping_add(1);
+        while self.fonts.len() > MAX_FONTS {
+            let Some(oldest) = self
+                .fonts
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, cached)| cached.used)
+                .map(|(index, _)| index)
+            else {
+                return;
+            };
+            let cached = self.fonts.swap_remove(oldest);
+            // SAFETY: a font this cache created, deleted once, and not
+            // selected into any device context - see above.
+            unsafe { DeleteObject(cached.font as _) };
+        }
+    }
+
+    /// How many faces are held, for the test that pins the ceiling.
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.fonts.len()
+    }
+
+    /// Whether one face is still held, by the key it was asked for under.
+    ///
+    /// Asked by key rather than by comparing handles, because GDI is free to
+    /// hand a deleted object's number back out and a test that believed it
+    /// would pass while the cache threw the face away.
+    #[cfg(test)]
+    fn holds(&self, family: &str, px: i32, weight: i32) -> bool {
+        self.fonts
+            .iter()
+            .any(|c| c.key.family == family && c.key.px == px && c.key.weight == weight)
+    }
+
     pub fn clear(&mut self) {
-        for (_, font) in self.fonts.drain(..) {
+        for cached in self.fonts.drain(..) {
             // SAFETY: fonts this cache created, deleted once.
-            unsafe { DeleteObject(font as _) };
+            unsafe { DeleteObject(cached.font as _) };
         }
         self.drop_icon();
     }
@@ -399,6 +480,10 @@ impl Drop for Path {
 impl<'a> Canvas<'a> {
     pub fn new(dc: HDC, scale: f32, fonts: &'a mut FontCache) -> Canvas<'a> {
         start_gdi_plus();
+        // One canvas is one pass over the window, and the moment before it
+        // draws anything is the only moment at which retiring a face cannot
+        // pull it out from under a caller holding one.
+        fonts.begin_pass();
         Canvas { dc, scale, fonts }
     }
 
@@ -985,6 +1070,46 @@ mod tests {
         assert_eq!(TextStyle::Title.size_dip(), 28.0);
         assert_eq!(TextStyle::Title.line_dip(), 36.0);
         assert_eq!(TextStyle::Title.face(), Face::Display);
+    }
+
+    #[test]
+    fn a_pass_never_loses_a_face_it_is_using_and_the_next_one_gives_the_stale_ones_back() {
+        // The font picker is what makes this happen: the strip preview
+        // redraws in whichever family the list is sitting on, so walking a
+        // machine's families made one live GDI object apiece.
+        let mut cache = FontCache::new(&[]);
+        let over = MAX_FONTS + 40;
+        for index in 0..over {
+            cache.get(&format!("Face {index}"), 12, 400);
+        }
+        assert_eq!(
+            cache.held(),
+            over,
+            "a face handed out during a pass has to survive that pass"
+        );
+
+        cache.begin_pass();
+        assert_eq!(cache.held(), MAX_FONTS, "the next pass gives the excess back");
+
+        // Least recently used, counted in passes: what this pass draws with
+        // stays, and what only an older pass wanted is what goes.
+        let kept = "Face 0";
+        cache.get(kept, 12, 400);
+        for index in over..(over + MAX_FONTS) {
+            cache.get(&format!("Face {index}"), 12, 400);
+        }
+        cache.begin_pass();
+        assert_eq!(cache.held(), MAX_FONTS);
+        assert!(cache.holds(kept, 12, 400), "the face this pass used was thrown away");
+
+        // And a size or a weight of its own is a face of its own, so the
+        // ceiling counts what it is really holding.
+        cache.get(kept, 13, 400);
+        cache.get(kept, 12, 700);
+        assert!(cache.holds(kept, 13, 400) && cache.holds(kept, 12, 700));
+
+        cache.clear();
+        assert_eq!(cache.held(), 0);
     }
 
     #[test]

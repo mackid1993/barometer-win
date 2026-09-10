@@ -50,12 +50,43 @@ fn kind_from_code(code: i64) -> SensorKind {
     }
 }
 
+/// The job object a helper is confined to.
+///
+/// Owned rather than abandoned, and that is the whole of it: the handle is
+/// what keeps `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` armed, so it has to outlive
+/// the helper - but a helper is started again every time the library moves,
+/// every time the process dies mid-read, and on a retry every few seconds for
+/// as long as there is no library to open. Abandoning the handle each time
+/// leaked a kernel object per attempt, forever, on exactly the machine that
+/// makes the most attempts: a fresh install with nothing to read.
+///
+/// Closing it is also what takes an unwanted helper down. `spawn` gives up at
+/// several points after the process is already running - no stdin, an
+/// unreadable greeting, a helper that reports no library - and
+/// `std::process::Child` neither kills nor reaps on drop, so before this those
+/// paths left a .NET process behind with nothing left alive to end it.
+///
+/// The handle is kept as an integer so that the provider stays `Send`: it
+/// lives on the sensor worker's thread, and a raw pointer would not cross.
+struct Job(isize);
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: a handle this type owns, closed once. The close is what
+        // kills whatever is still in the job.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0 as _) };
+    }
+}
+
 /// A running sensor helper.
 pub struct HelperProvider {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     devices: u64,
+    /// Dropped after the orderly shutdown below, by which point the job has
+    /// nothing left to kill. Declared last so it is closed last.
+    _job: Option<Job>,
 }
 
 impl HelperProvider {
@@ -105,7 +136,9 @@ impl HelperProvider {
             .spawn()
             .map_err(|e| SensorError::Transport(e.to_string()))?;
 
-        confine_to_job(&child);
+        // Held in a local, so every early return below closes it - which is
+        // what ends the helper those paths would otherwise leave running.
+        let job = confine_to_job(&child);
 
         let stdin = child
             .stdin
@@ -133,7 +166,7 @@ impl HelperProvider {
         }
         let devices = greeting.get("devices").and_then(Value::as_u64).unwrap_or(0);
 
-        Ok(HelperProvider { child, stdin, stdout, devices })
+        Ok(HelperProvider { child, stdin, stdout, devices, _job: job })
     }
 
     /// Devices found when the helper opened. Zero means it ran but saw no
@@ -207,7 +240,9 @@ impl SensorProvider for HelperProvider {
 /// driver handle open, and the user has to find it in Task Manager, which they
 /// will not. Best effort: failing to confine it is not a reason to refuse the
 /// sensors, only a reason not to rely on it for cleanup.
-fn confine_to_job(child: &Child) {
+///
+/// The handle is returned rather than discarded; see `Job`.
+fn confine_to_job(child: &Child) -> Option<Job> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -216,12 +251,12 @@ fn confine_to_job(child: &Child) {
     };
 
     // SAFETY: a fresh unnamed job object, configured and then handed the child.
-    // The handle is deliberately never closed: closing it kills the child, and
-    // its lifetime is meant to be the lifetime of this process.
+    // The handle goes to the caller, which keeps it for as long as the helper
+    // is wanted: closing it is what kills the child.
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
-            return;
+            return None;
         }
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -232,5 +267,6 @@ fn confine_to_job(child: &Child) {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         );
         AssignProcessToJobObject(job, child.as_raw_handle() as _);
+        Some(Job(job as isize))
     }
 }

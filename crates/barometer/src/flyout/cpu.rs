@@ -177,6 +177,46 @@ pub fn remember(history: &mut VecDeque<Sample>, sample: Sample) {
     }
 }
 
+/// The newest `seconds` of a timeline, for the strip's tick to publish.
+///
+/// The published snapshot used to carry a copy of the whole day whether or not
+/// anything was open. Each timeline saturates at 86,400 samples of 16 bytes, so
+/// that was three allocations of about 1.4 MB, three copies of the same, and
+/// three frees, every second - for graphs that in the ordinary case nobody is
+/// looking at.
+///
+/// Gating it on "a panel is open" was most of the fix and not all of it: the
+/// weather panel draws no timeline at all and the processor's picker opens on
+/// five minutes, so an open panel was still handed a day. The panel says how
+/// far back it actually reaches - `Content::history_span` - and only a picker
+/// set to 24h asks for the lot.
+///
+/// Zero seconds means nothing is drawing one. Counted from the newest sample
+/// rather than from the clock, because that is where the graph puts its right
+/// edge: a machine that slept through the last hour still shows the range it
+/// has, as `timeline` already does.
+pub fn newest_span(history: &VecDeque<Sample>, seconds: i64) -> Vec<Sample> {
+    if seconds <= 0 {
+        return Vec::new();
+    }
+    let Some(newest) = history.back() else { return Vec::new() };
+    let oldest_wanted = newest.at_unix - seconds;
+    // The deque is in time order, so this is the first sample inside the
+    // window and everything after it belongs. `partition_point` is a binary
+    // search: walking a day of samples to find the last five minutes of them
+    // would put back a good part of what this saves.
+    let (front, back) = history.as_slices();
+    let from_front = front.partition_point(|s| s.at_unix < oldest_wanted);
+    if from_front < front.len() {
+        let mut wanted = Vec::with_capacity(front.len() - from_front + back.len());
+        wanted.extend_from_slice(&front[from_front..]);
+        wanted.extend_from_slice(back);
+        return wanted;
+    }
+    let from_back = back.partition_point(|s| s.at_unix < oldest_wanted);
+    back[from_back..].to_vec()
+}
+
 /// The graph's series for the `seconds` ending at the newest sample, from
 /// TimelineGraphData.make: the samples inside that window, thinned to
 /// GRAPH_POINTS with the newest always kept, each placed along the width by
@@ -621,6 +661,12 @@ impl Content for CpuContent {
         ModuleId::Cpu
     }
 
+    /// Whatever the picker is set to, which is five minutes until
+    /// somebody moves it.
+    fn history_span(&self) -> i64 {
+        self.flyout.range.seconds()
+    }
+
     fn build(&mut self, cx: &Context) -> Page {
         if let Some(snapshot) = latest(&self.slot) {
             self.flyout.snapshot = snapshot;
@@ -909,6 +955,74 @@ mod tests {
             Kind::Text { text, .. } | Kind::Chip { text, .. } => Some(text),
             _ => None,
         }
+    }
+
+    /// A timeline of `count` samples a second apart, ending at `newest`.
+    fn seconds_apart(count: i64, newest: i64) -> VecDeque<Sample> {
+        (0..count)
+            .map(|index| Sample { at_unix: newest - (count - 1 - index), value: 0.5 })
+            .collect()
+    }
+
+    #[test]
+    fn a_timeline_is_copied_from_its_newest_end_and_only_as_far_back_as_asked() {
+        let history = seconds_apart(3_600, 10_000);
+
+        // Nothing is drawing a graph, so nothing is worth copying. This is the
+        // ordinary case: five of the seven panels graph no timeline at all.
+        assert!(newest_span(&history, 0).is_empty());
+        assert!(newest_span(&history, -1).is_empty());
+        assert!(newest_span(&VecDeque::new(), HistoryRange::TwentyFourHours.seconds()).is_empty());
+
+        // A minute of a sample a second reaches sixty seconds back from the
+        // newest, which is sixty-one samples: both ends are inside the window.
+        let minute = newest_span(&history, HistoryRange::OneMinute.seconds());
+        assert_eq!(minute.len(), 61);
+        assert_eq!(minute.first().map(|s| s.at_unix), Some(9_940));
+        assert_eq!(minute.last().map(|s| s.at_unix), Some(10_000));
+
+        // Asked for more than there is, it hands over what there is rather
+        // than padding: the graph places each sample by its own time.
+        let day = newest_span(&history, HistoryRange::TwentyFourHours.seconds());
+        assert_eq!(day.len(), history.len());
+        assert_eq!(day.first().map(|s| s.at_unix), Some(6_401));
+
+        // Measured from the newest sample and not from the clock, so a machine
+        // that slept still shows the range it has rather than an empty graph.
+        let stale = seconds_apart(120, 1_000);
+        assert_eq!(newest_span(&stale, HistoryRange::OneMinute.seconds()).len(), 61);
+    }
+
+    #[test]
+    fn a_deque_that_has_wrapped_is_copied_in_time_order_and_not_in_ring_order() {
+        // What `remember` leaves behind after a day: the ring starts somewhere
+        // in the middle of its buffer, so `as_slices` hands back two pieces
+        // with the older one second in memory. Reading them in the order they
+        // are stored would draw the graph inside out.
+        let mut history: VecDeque<Sample> = VecDeque::with_capacity(16);
+        for at in 0..16 {
+            history.push_back(Sample { at_unix: at, value: 0.5 });
+        }
+        for _ in 0..10 {
+            history.pop_front();
+            let at = history.back().map(|s| s.at_unix).unwrap_or(0) + 1;
+            history.push_back(Sample { at_unix: at, value: 0.5 });
+        }
+        assert!(!history.as_slices().1.is_empty(), "the deque has to have wrapped for this to test anything");
+
+        // The whole of it, opening inside the first piece.
+        let all = newest_span(&history, 1_000);
+        assert_eq!(all.len(), history.len());
+        assert!(all.windows(2).all(|pair| pair[0].at_unix < pair[1].at_unix));
+        assert_eq!(all.first().map(|s| s.at_unix), history.front().map(|s| s.at_unix));
+
+        // And a window that opens inside the second piece, which is the case
+        // the search falls through to.
+        let newest = history.back().expect("not empty").at_unix;
+        let tail = newest_span(&history, 2);
+        assert_eq!(tail.len(), 3);
+        assert_eq!(tail.first().map(|s| s.at_unix), Some(newest - 2));
+        assert!(tail.windows(2).all(|pair| pair[0].at_unix < pair[1].at_unix));
     }
 
     #[test]

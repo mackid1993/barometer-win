@@ -271,6 +271,17 @@ pub fn take_panel_opened() -> bool {
     PANEL_OPENED.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
+/// The strip's window, or null while there is none.
+///
+/// Published here so callers that fire often do not have to find it by class
+/// name. `FindWindowW` walks the desktop's top-level windows and needs a
+/// UTF-16 buffer built for it, and the UI Automation sweep's hook wanted the
+/// handle on every window event Explorer's taskbar thread raises - which a
+/// taskbar animation delivers in bursts.
+pub fn strip_window() -> HWND {
+    STRIP.load(std::sync::atomic::Ordering::Acquire) as HWND
+}
+
 /// Tells the sampling loop that a panel is showing, from the panel's thread.
 ///
 /// Several of the panels' fields are gathered only while one is open - the
@@ -1094,6 +1105,12 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
     let bitmap =
         CreateDIBSection(memory_dc, &info, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
     if bitmap.is_null() || bits.is_null() {
+        // A section that was created but handed back no pixels still has to be
+        // deleted. This is the path taken when GDI is short of memory, which
+        // is the one moment leaking a bitmap per repaint would compound.
+        if !bitmap.is_null() {
+            DeleteObject(bitmap as _);
+        }
         DeleteDC(memory_dc);
         return;
     }

@@ -428,6 +428,28 @@ unsafe fn set_collection(key: &ConnectionKey, on: bool) -> bool {
     if key.local_port == u32::MAX {
         return false;
     }
+    // The two families need different row structures, and a v6 row needs
+    // the scope identifiers a v4 row has no field for - which is why the
+    // key carries them. Without this branch the v6 half of the table could
+    // be switched on and never off, which is what it was doing.
+    if let Some((local_scope, remote_scope)) = key.scopes {
+        let mut row: MIB_TCP6ROW = std::mem::zeroed();
+        row.State = MIB_TCP_STATE_ESTAB;
+        row.LocalAddr.u.Byte = key.local;
+        row.dwLocalScopeId = local_scope;
+        row.dwLocalPort = key.local_port;
+        row.RemoteAddr.u.Byte = key.remote;
+        row.dwRemoteScopeId = remote_scope;
+        row.dwRemotePort = key.remote_port;
+        return SetPerTcp6ConnectionEStats(
+            &row,
+            TcpConnectionEstatsData,
+            &value as *const TCP_ESTATS_DATA_RW_v0 as *const u8,
+            0,
+            std::mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+            0,
+        ) == 0;
+    }
     let plain = MIB_TCPROW_LH {
         Anonymous: MIB_TCPROW_LH_0 { dwState: MIB_TCP_STATE_ESTAB as u32 },
         dwLocalAddr: u32::from_ne_bytes([key.local[0], key.local[1], key.local[2], key.local[3]]),
@@ -457,6 +479,14 @@ struct ConnectionKey {
     local_port: u32,
     remote: [u8; 16],
     remote_port: u32,
+    /// The local and remote scope identifiers, for an IPv6 connection.
+    ///
+    /// `None` is what says the connection is IPv4, and it is also what
+    /// `set_collection` reads to decide which of the two row structures to
+    /// build. A v6 row cannot be rebuilt from an address and a port alone,
+    /// so without these the accounting switched on for a v6 connection
+    /// could never be switched off again.
+    scopes: Option<(u32, u32)>,
 }
 
 /// Per-process traffic, from the byte counts of every TCP connection each
@@ -509,6 +539,10 @@ impl TrafficSampler {
 /// Every established TCP connection with its owner and byte counts.
 fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
     let mut all = HashMap::new();
+    // Every established connection this pass saw, whether or not its
+    // counters could be read, so that `ENABLED` can be pruned to what still
+    // exists.
+    let mut live: HashSet<ConnectionKey> = HashSet::new();
     // SAFETY: tables sized by the API's own report, rows read within that
     // count; the statistics calls take rows this function builds.
     unsafe {
@@ -574,7 +608,9 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
                 local_port: row.dwLocalPort,
                 remote,
                 remote_port: row.dwRemotePort,
+                scopes: None,
             };
+            live.insert(key.clone());
             // Switched on once per connection rather than on every sample.
             // Switching collection on needs elevation; without it the read
             // below answers with whatever was in the buffer, so a refusal
@@ -649,20 +685,43 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
                 plain.RemoteAddr.u.Byte = row.ucRemoteAddr;
                 plain.dwRemoteScopeId = row.dwRemoteScopeId;
                 plain.dwRemotePort = row.dwRemotePort;
-                let enable = TCP_ESTATS_DATA_RW_v0 { EnableCollection: 1 as BOOLEAN };
-                // Switching collection on needs elevation; without it the read
-                // below answers with whatever was in the buffer, so a refusal
-                // means this connection is not counted at all.
-                if SetPerTcp6ConnectionEStats(
-                    &plain,
-                    TcpConnectionEstatsData,
-                    &enable as *const TCP_ESTATS_DATA_RW_v0 as *const u8,
-                    0,
-                    std::mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
-                    0,
-                ) != 0
-                {
-                    continue;
+                let key = ConnectionKey {
+                    local: row.ucLocalAddr,
+                    local_port: row.dwLocalPort,
+                    remote: row.ucRemoteAddr,
+                    remote_port: row.dwRemotePort,
+                    scopes: Some((row.dwLocalScopeId, row.dwRemoteScopeId)),
+                };
+                live.insert(key.clone());
+                // Once per connection, as on the v4 side above. This half
+                // was re-issuing the call for every established v6
+                // connection on every pass and recording none of them, so
+                // what it switched on was never switched off.
+                let already = ENABLED
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().map(|set| set.contains(&key)))
+                    .unwrap_or(false);
+                if !already {
+                    let enable = TCP_ESTATS_DATA_RW_v0 { EnableCollection: 1 as BOOLEAN };
+                    // Switching collection on needs elevation; without it
+                    // the read below answers with whatever was in the
+                    // buffer, so a refusal means this connection is not
+                    // counted at all.
+                    if SetPerTcp6ConnectionEStats(
+                        &plain,
+                        TcpConnectionEstatsData,
+                        &enable as *const TCP_ESTATS_DATA_RW_v0 as *const u8,
+                        0,
+                        std::mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+                        0,
+                    ) != 0
+                    {
+                        continue;
+                    }
+                    if let Ok(mut guard) = ENABLED.lock() {
+                        guard.get_or_insert_with(HashSet::new).insert(key.clone());
+                    }
                 }
                 let mut data: TCP_ESTATS_DATA_ROD_v0 = std::mem::zeroed();
                 if GetPerTcp6ConnectionEStats(
@@ -681,14 +740,21 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
                 {
                     continue;
                 }
-                let key = ConnectionKey {
-                    local: row.ucLocalAddr,
-                    local_port: row.dwLocalPort,
-                    remote: row.ucRemoteAddr,
-                    remote_port: row.dwRemotePort,
-                };
                 all.insert(key, (row.dwOwningPid, data.DataBytesIn, data.DataBytesOut));
             }
+        }
+    }
+
+    // Connections that have gone are forgotten. The record exists so that
+    // accounting is switched on once and off again, and a key whose
+    // connection has closed can be neither - so keeping it only grows the
+    // set and lengthens the walk `stop_collecting` makes over it. Any
+    // machine with a browser on it opens some thousands of sockets an hour,
+    // and every one of them was being added for as long as a panel stayed
+    // open.
+    if let Ok(mut guard) = ENABLED.lock() {
+        if let Some(set) = guard.as_mut() {
+            set.retain(|key| live.contains(key));
         }
     }
     Some(all)

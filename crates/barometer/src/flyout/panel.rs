@@ -439,7 +439,8 @@ impl Panel {
         self.active.map(|index| self.contents[index].accent()).unwrap_or(Accent::signature(ModuleId::Cpu))
     }
 
-    /// Adopts contents registered from the other thread.
+    /// Adopts contents registered from the other thread, and lets go of
+    /// the ones it retired.
     fn adopt_pending(&mut self) {
         let pending: Vec<Box<dyn Content>> =
             self.shared.pending.lock().map(|mut pending| pending.drain(..).collect()).unwrap_or_default();
@@ -450,6 +451,35 @@ impl Panel {
             let item = content.item();
             self.contents.retain(|existing| existing.item() != item);
             self.contents.push(content);
+        }
+        self.drop_retired();
+    }
+
+    /// Drops the contents whose strip items have gone - a deleted stack,
+    /// and nothing else so far.
+    ///
+    /// The panel closes first if the thing being deleted is what it is
+    /// showing. There is nothing to fall back to: the column it was
+    /// anchored under went with the stack, so a panel left standing would
+    /// be hanging off a piece of taskbar that now belongs to something
+    /// else.
+    fn drop_retired(&mut self) {
+        let retiring: Vec<StripItem> =
+            self.shared.retiring.lock().map(|mut list| list.drain(..).collect()).unwrap_or_default();
+        if retiring.is_empty() {
+            return;
+        }
+        let showing = self.active.map(|index| self.contents[index].item());
+        if showing.is_some_and(|item| retiring.contains(&item)) {
+            self.hide("the item was deleted");
+        }
+        self.contents.retain(|content| !retiring.contains(&content.item()));
+        // `active` is an index into that list, so removing anything ahead
+        // of it would leave it pointing at somebody else's content. Found
+        // again by item, which is what it really means.
+        self.active = showing.and_then(|item| self.content_index(item));
+        if self.active.is_none() {
+            self.layout = None;
         }
     }
 
@@ -628,6 +658,9 @@ impl Panel {
         }
         self.stretch = 0.0;
         self.stretching = false;
+        // Nothing is drawing a timeline any more, so nothing is worth
+        // copying into the next tick's snapshot.
+        self.publish_history_span();
         if let Some(index) = self.active {
             self.contents[index].closed();
         }
@@ -764,6 +797,30 @@ impl Panel {
         let mut content = page.elements;
         settle_scrollers(&mut content, &mut self.hscroll);
         self.layout = Some(Layout { content, content_h: page.height, footer });
+        // Published from here because this is the one place a page is
+        // built, so it covers opening, a range chip, a stack switching
+        // tabs and a feed arriving, without a hook in each.
+        self.publish_history_span();
+    }
+
+    /// Tells the strip's thread how much of each timeline is worth
+    /// copying: what the content showing asks for, or nothing at all
+    /// while the panel is down. See `Content::history_span`.
+    fn publish_history_span(&self) {
+        let wanted = match (self.open, self.active) {
+            (true, Some(index)) => self.contents[index].history_span(),
+            _ => 0,
+        };
+        let before = self.shared.history_span.swap(wanted, Ordering::AcqRel);
+        if wanted > before {
+            // Asking for more than the last tick published means the page
+            // just laid out is drawing from a snapshot that does not go
+            // back far enough - somebody moved the picker from five
+            // minutes to a day, and the graph would sit at five minutes
+            // until the next second fell due. The same wake the panel
+            // opening uses, for the same reason.
+            crate::window::notify_panel_opened();
+        }
     }
 
     /// The sideways-scrolling picture under a point in window coordinates,

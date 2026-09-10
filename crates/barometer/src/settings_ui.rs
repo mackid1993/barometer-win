@@ -61,7 +61,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetClientRect, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, MoveWindow,
+    GetClientRect, GetMessageW, GetWindowLongPtrW, IsWindowVisible, KillTimer, LoadCursorW,
+    MoveWindow,
     LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor,
     SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
@@ -216,6 +217,27 @@ impl SettingsWindow {
     /// Whether the window exists, shown or hidden.
     pub fn is_open(&self) -> bool {
         self.shared.hwnd.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether the window is actually on screen.
+    ///
+    /// Not the same question as `is_open`, and the difference costs real work
+    /// every second: the close button hides the window rather than destroying
+    /// it, so `is_open` stays true for the rest of the run once somebody has
+    /// opened Settings even once. Everything gated on it - the whole expensive
+    /// half of `snapshot`, which is a `GetIfTable2` over every interface on the
+    /// machine plus the volume, disk and sensor-source clones, and the snapshot
+    /// clone published to the window - then went on being built forever, for a
+    /// window nobody could see. A hidden window has nothing to draw and no
+    /// preview to keep current, so it is asked for nothing.
+    pub fn is_visible(&self) -> bool {
+        let hwnd = self.shared.hwnd.load(Ordering::Acquire);
+        if hwnd == 0 {
+            return false;
+        }
+        // SAFETY: a handle the window thread published; asking about a window
+        // that has since gone answers false, which is the right answer.
+        unsafe { IsWindowVisible(hwnd as HWND) != 0 }
     }
 
     /// Destroys the window and waits for its thread.

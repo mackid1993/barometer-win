@@ -506,7 +506,7 @@ unsafe extern "system" fn win_event_proc(
     // TrafficMonitor re-asserts topmost from the layout-changed message its
     // sweep posts; this is that message. Posted, not sent: this runs on the
     // sweep's thread and must never wait on the one that owns the window.
-    let strip = FindWindowW(crate::tray::wide(crate::window::CLASS_NAME).as_ptr(), ptr::null());
+    let strip = crate::window::strip_window();
     if !strip.is_null() {
         PostMessageW(strip, crate::window::WM_RAISE, 0, 0);
     }
