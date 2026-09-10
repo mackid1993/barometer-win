@@ -234,7 +234,8 @@ impl GpuModule {
     /// or, when the choice is automatic, the one with the most memory of
     /// its own - the discrete card on a laptop that also has integrated
     /// graphics, which is what "the GPU" means to the person who bought it.
-    /// Ties go to the first the kernel lists.
+    /// Ties go to the lowest LUID, so two cards with nothing of their own
+    /// always answer the same way rather than following enumeration order.
     pub fn active(&self) -> Option<&Adapter> {
         self.chosen().or_else(|| self.adapters.iter().max_by_key(|a| (a.memory_total, std::cmp::Reverse(a.luid))))
     }
@@ -403,7 +404,7 @@ mod tests {
         module.choice = GpuChoice::Automatic;
         assert_eq!(module.active().map(|a| a.key.as_str()), Some("NVIDIA#0"));
         assert_eq!(module.gpu_adapters()[0].0, "NVIDIA#0", "the list leads with it");
-        // Two with nothing of their own: the first listed.
+        // Two with nothing of their own: the lower LUID.
         module.adapters[1].memory_total = 0;
         assert_eq!(module.active().map(|a| a.key.as_str()), Some("Intel#0"));
         // A choice is a choice.

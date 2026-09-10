@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to stamp the build with, e.g. 1.0.10"
+        description: "Version to stamp the build with, e.g. 1.0.1"
         required: true
         type: string
       publish:

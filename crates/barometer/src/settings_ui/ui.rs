@@ -29,14 +29,6 @@ use super::theme::{glyph, Color, Theme};
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Pane {
     Strip,
-    /// The sensor stack: is LibreHardwareMonitor here, install it, remove it,
-    /// what PawnIO's state is.
-    ///
-    /// Its own pane rather than a section inside the Sensors module's
-    /// inspector, which is where it started. All of it is a property of the
-    /// machine and not of one module's appearance on the strip, and somebody
-    /// whose temperatures do not work looks in the sidebar - not inside a
-    /// module they may well have switched off.
     /// One module's own page: what it puts on the strip, what it contributes
     /// to a stack, and whatever else belongs to that module alone - the
     /// sensor source under Sensors, the locations and units under Weather.
@@ -134,9 +126,7 @@ pub enum Id {
     HeadingWeight,
     /// The weight of the numbers under them.
     Weight,
-    Size,
     Gap,
-    Padding,
     GpuAdapter,
     PinnedSensor,
     PollSeconds,
@@ -172,6 +162,9 @@ pub enum Id {
     StartAtLogin,
     CheckNow,
     ClearSkipped,
+    /// The settings file, written to or read from a place the user picks.
+    ExportSettings,
+    ImportSettings,
     Link(&'static str),
     DropdownItem(usize),
     Preview,
@@ -293,6 +286,19 @@ pub const DROPDOWN_W: f32 = 160.0;
 /// A text field beside its label. Wider than a dropdown because what goes
 /// into one - a path, a name - is longer than what comes out of a list.
 pub const FIELD_W: f32 = 280.0;
+
+/// The widest control a row `width` wide can carry and still keep its caption
+/// beside the label.
+///
+/// For a dropdown whose value is as long as whatever the machine happens to
+/// hold - a font family name, which GDI reports at up to its own 31-character
+/// limit. A fixed width has to be chosen for the narrowest window and then
+/// cuts the value on every wider one; this spends the room the pane actually
+/// has, and stops exactly where `Shape::Beside` would give way, so a row that
+/// uses it keeps the shape it would have had.
+pub fn widest_beside_control(width: f32) -> f32 {
+    width - 2.0 * ROW_PAD - COLUMN_GAP - CAPTION_BESIDE_MIN_W
+}
 pub const TOGGLE_W: f32 = 40.0;
 pub const TOGGLE_H: f32 = 20.0;
 pub const RADIUS_CONTROL: f32 = 4.0;

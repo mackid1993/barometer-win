@@ -29,7 +29,7 @@ use barometer_core::ModuleId;
 
 use super::geometry::Rect;
 use super::model::{
-    self, clamp_gap, clamp_padding, clamp_poll, clamp_size, GpuChoice, Model, SensorSource,
+    self, clamp_gap, clamp_poll, GpuChoice, Model, SensorSource,
     Snapshot, StripItem,
 };
 use super::preview;
@@ -98,13 +98,15 @@ pub struct View<'a> {
     /// Which appearance the preview strip is showing.
     pub preview_light: bool,
     pub version: &'a str,
-    /// Whether Barometer is in the per-user Run key.
+    /// Whether Barometer's logon task is registered and enabled.
     ///
-    /// Read from the registry rather than kept in the settings file: the user
-    /// can take it out from Task Manager's Startup tab, and a switch drawn
-    /// from a copy in a file of ours would then be showing something that is
-    /// not true.
+    /// Read from Task Scheduler rather than kept in the settings file: the
+    /// user can disable the task there themselves, and a switch drawn from a
+    /// copy in a file of ours would then be showing something that is not
+    /// true.
     pub starts_at_login: bool,
+    /// What the last settings import or export said.
+    pub transfer: Option<&'a str>,
 }
 
 /// The project's pages, for the links that open a browser.
@@ -343,7 +345,7 @@ fn composer_list(b: &mut Builder, view: &View) {
         match item {
             StripItem::Module(id) => {
                 let fact = view.snapshot.fact(id, view.model);
-                let caption = model::module_caption(view.model, id, fact);
+                let caption = model::module_caption(view.model, id, fact, sensor_shown(view));
                 b.list_row(
                     item,
                     theme::module_color(id),
@@ -472,12 +474,12 @@ fn module_inspector(b: &mut Builder, view: &View, id: ModuleId) {
             true,
         );
     }
-    // Sensors is configured here, with every other module, and not on the pane
-    // named after it. That pane is about the *source* - which library, where it
-    // is, install and remove - and somebody who wants to change which
-    // temperature is on the strip has no reason to look there for it. Two
-    // places called Sensors, one of which could not switch the module on, was
-    // the confusion.
+    // Sensors is configured here, with every other module's strip settings, and
+    // not in the Source card further down this page. That card is about the
+    // *source* - which library, where it is, install and remove - and somebody
+    // who wants to change which temperature is on the strip has no reason to
+    // look there for it. Two places called Sensors, one of which could not
+    // switch the module on, was the confusion that split them.
     if id == ModuleId::Sensors {
         let (items, selected) = dropdown_items(view, Id::PinnedSensor);
         if items.len() > 1 {
@@ -556,14 +558,14 @@ fn module_inspector(b: &mut Builder, view: &View, id: ModuleId) {
     b.row_dropdown(Id::AddToStack, "Put in a stack", Some(&hint), "Choose", 240.0, !items.is_empty());
     b.card_end();
 
-    // Deliberately nothing module-specific below the stack row. The sensor
-    // source and the weather's locations, units and refresh each have a pane
-    // of their own in the sidebar: both are about the machine or the world
-    // rather than about this module's column, and buried here they were
-    // reachable only by selecting a module the user may have switched off.
+    // Nothing module-specific below the stack card here. The sensor source and
+    // the weather's locations, units and refresh are about the machine or the
+    // world rather than about this module's column, so `module_page` draws them
+    // under this inspector instead - last on the page, after everything that
+    // decides what the column looks like.
     if id == ModuleId::Weather {
         b.advance(8.0);
-        b.row_info("Locations, units and how often it refreshes are in the Weather pane.", None);
+        b.row_info("Locations, units and how often it refreshes are below.", None);
     }
 }
 
@@ -751,8 +753,8 @@ fn sensors_sections(b: &mut Builder, view: &View) {
     b.card_end();
 
     // Which reading is shown, in what unit and how often, all live in the
-    // Strip pane's Sensors inspector now - with every other module's settings,
-    // which is where somebody looks for them. What is left here is the source.
+    // Sensors inspector above - with every other module's settings, which is
+    // where somebody looks for them. What is left here is the source.
 
     b.section("Library");
     b.card_begin();
@@ -931,7 +933,7 @@ fn stack_inspector(b: &mut Builder, view: &View, id: u32) {
     b.row_dropdown(
         Id::AddMetric,
         "Add a reading",
-        if count == 0 { Some("The preview above shows the column as readings are added.") } else { None },
+        if count == 0 { Some("The preview on the Strip pane shows the column as readings are added.") } else { None },
         "Choose a reading",
         240.0,
         !items.is_empty(),
@@ -967,16 +969,24 @@ fn appearance_pane(b: &mut Builder, view: &View) {
     b.advance(16.0);
     preview_block(b, view);
 
-    let font = &view.model.settings.font;
     b.section("Text");
     b.card_begin();
+    // The two family rows take the room the pane has rather than a fixed 280.
+    // A family name is as long as its foundry made it - "Bahnschrift SemiBold
+    // SemiConden" and "Segoe UI Variable Display Semib" are 31 characters,
+    // which is all GDI's own `LOGFONTW` will report - and 280 left the value
+    // 240 DIP to be drawn in, which the longest names on a stock Windows 11
+    // come within a few pixels of and "(not installed)" goes straight past.
+    // Capped, because past a font name's length the extra only starves the
+    // label beside it on a maximized window.
+    let family_w = super::ui::widest_beside_control(b.width()).clamp(280.0, 420.0);
     let (families, selected) = dropdown_items(view, Id::Family);
     b.row_dropdown(
         Id::Family,
         "Font",
         None,
         &families[selected.min(families.len() - 1)],
-        280.0,
+        family_w,
         true,
     );
     let (heads, head) = dropdown_items(view, Id::HeadingFamily);
@@ -985,7 +995,7 @@ fn appearance_pane(b: &mut Builder, view: &View) {
         "Heading font",
         Some("A face of its own for the names on the strip. On Windows a weight is often a family - Segoe UI Semibold is its own - so a heading can be a different face rather than only a heavier one."),
         &heads[head.min(heads.len() - 1)],
-        280.0,
+        family_w,
         true,
     );
     // One row, two weights: the strip is two kinds of text, a heading naming
@@ -1009,17 +1019,6 @@ fn appearance_pane(b: &mut Builder, view: &View) {
             },
         ],
     );
-    let size = font.max_size_dip;
-    b.row_slider(
-        Id::Size,
-        "Text size",
-        Some(&preview::size_caption(font, view.snapshot, view.model.shown_count())),
-        size,
-        barometer_core::settings::StripFont::MIN_SIZE_DIP,
-        barometer_core::settings::StripFont::MAX_SIZE_DIP,
-        1.0,
-        &format!("{} pt", size.round()),
-    );
     b.card_end();
 
     b.section("Spacing");
@@ -1034,17 +1033,6 @@ fn appearance_pane(b: &mut Builder, view: &View) {
         24.0,
         1.0,
         &format!("{} px", gap.round()),
-    );
-    let padding = view.model.settings.padding_dip;
-    b.row_slider(
-        Id::Padding,
-        "At the ends",
-        Some("Inside the space the tray gives the strip, which already leaves a little slack."),
-        padding,
-        0.0,
-        24.0,
-        1.0,
-        &format!("{} px", padding.round()),
     );
     b.card_end();
 }
@@ -1098,6 +1086,19 @@ fn general_pane(b: &mut Builder, view: &View) {
             "Stop skipping",
         );
     }
+    b.card_end();
+
+    b.section("Settings file");
+    b.card_begin();
+    b.row_buttons(
+        Some(view.transfer.unwrap_or(
+            "Everything on these pages, as one file to keep or carry to another PC.",
+        )),
+        &[
+            ButtonSpec { id: Id::ExportSettings, text: "Export\u{2026}", accent: false, external: false, enabled: true },
+            ButtonSpec { id: Id::ImportSettings, text: "Import\u{2026}", accent: false, external: false, enabled: true },
+        ],
+    );
     b.card_end();
 }
 
@@ -1446,6 +1447,21 @@ const PRECIPITATIONS: [(PrecipitationUnit, &str); 2] = [
 ];
 
 /// The sensors the pin picker offers: temperatures, in the source's order.
+/// What the Sensors module's column is showing, for the composer caption.
+///
+/// Resolved here rather than in the model because the model only holds the
+/// pinned sensor's identifier; its name, and whether the source still
+/// reports it, are in the live snapshot.
+fn sensor_shown<'a>(view: &View<'a>) -> model::SensorShown<'a> {
+    let Some(id) = view.model.settings.sensors.pinned_sensor_id.as_deref() else {
+        return model::SensorShown::Hottest;
+    };
+    match view.snapshot.sensors.iter().find(|sensor| sensor.id == id) {
+        Some(sensor) => model::SensorShown::Pinned(&sensor.name),
+        None => model::SensorShown::PinnedMissing,
+    }
+}
+
 fn temperature_sensors(snapshot: &Snapshot) -> Vec<&barometer_core::sensors::Sensor> {
     snapshot
         .sensors
@@ -1648,9 +1664,7 @@ impl ChoiceContext {
 /// Applies a slider's new value.
 pub fn slide(model: &mut Model, id: Id, value: f32) {
     match id {
-        Id::Size => model.settings.font.max_size_dip = clamp_size(value.round()),
         Id::Gap => model.settings.column_gap_dip = clamp_gap(value.round()),
-        Id::Padding => model.settings.padding_dip = clamp_padding(value.round()),
         Id::PollSeconds => model.settings.sensors.poll_seconds = clamp_poll(value.round() as u32),
         Id::RefreshMinutes => {
             model.settings.weather.refresh_interval_minutes = (value.round() as u32)
@@ -1868,6 +1882,7 @@ mod tests {
                 preview_light: false,
                 version: "0.1.0",
                 starts_at_login: false,
+                transfer: None,
             }
         }
     }
@@ -2071,6 +2086,27 @@ mod tests {
         assert_eq!(f.model.settings.font.family, "Segoe UI Variable Text");
     }
 
+    /// A family name runs to GDI's own 31-character limit, and a fixed 280
+    /// left the value 240 DIP - a few pixels more than the longest names on a
+    /// stock Windows 11 measure, and less than "(not installed)" needs.
+    #[test]
+    fn the_family_pickers_take_the_room_the_pane_has_rather_than_a_fixed_width() {
+        let f = Fixture::new();
+        let view = f.view(None);
+        let picker = |pane_w: f32, id: Id| {
+            let (elements, _) = content(Pane::Appearance, &view, pane_w, &measure);
+            elements.iter().find(|e| e.id == id).expect("the picker").rect
+        };
+        // The default window, which has room to spare.
+        assert!(picker(704.0, Id::Family).w > 280.0);
+        // The narrowest window keeps the width it always had, rather than
+        // squeezing the label out beside it.
+        assert_eq!(picker(584.0, Id::Family).w, 280.0);
+        // Both rows carry the same control, so they line up.
+        assert_eq!(picker(704.0, Id::Family).w, picker(704.0, Id::HeadingFamily).w);
+        assert_eq!(picker(704.0, Id::Family).x, picker(704.0, Id::HeadingFamily).x);
+    }
+
     #[test]
     fn the_gpu_picker_hands_back_the_adapters_opaque_key() {
         let mut f = Fixture::new();
@@ -2101,8 +2137,6 @@ mod tests {
     #[test]
     fn sliders_clamp_and_round_into_their_settings() {
         let mut f = Fixture::new();
-        slide(&mut f.model, Id::Size, 11.4);
-        assert_eq!(f.model.settings.font.max_size_dip, 11.0);
         slide(&mut f.model, Id::Gap, 90.0);
         assert_eq!(f.model.settings.column_gap_dip, barometer_core::store::MAX_SPACING_DIP);
         slide(&mut f.model, Id::PollSeconds, 0.0);
@@ -2196,7 +2230,7 @@ mod tests {
         };
         // By weight rather than by position, and against the weights this
         // family actually offers rather than the five names that exist:
-        // hardcoded indices chose the neighbour the moment the list changed,
+        // hardcoded indices chose the neighbor the moment the list changed,
         // and the list is now as long as the family has faces.
         let offered = weights_offered("Segoe UI Variable Text", &context.faces);
         let at = |wanted| offered.iter().position(|(w, _)| *w == wanted).expect("offered");
@@ -2333,7 +2367,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sensors_pane_stays_calm_about_a_fresh_install() {
+    fn the_sensors_page_stays_calm_about_a_fresh_install() {
         let mut f = Fixture::new();
         f.snapshot.sensor_source = SensorSource::NotInstalled;
         let (elements, _) = content(Pane::Module(ModuleId::Sensors), &f.view(None), 704.0, &measure);

@@ -651,12 +651,6 @@ impl<'c, 'f> Surface<'c, 'f> {
     }
 }
 
-/// The ink for a glyph on a tile of `color`: white wherever white reads at
-/// 3:1, the brand ground where it does not (docs/ui-design.md, 2.5).
-///
-/// Not "whichever contrasts more": white is what every other tile on the
-/// desktop draws its glyph in, and a set of tiles that switched ink on a
-/// fraction would read as two kinds of tile.
 /// A module's mark on its colored square, from `IconTile` in the Swift's
 /// BarometerDesign.
 ///
@@ -690,6 +684,12 @@ fn draw_tile(surface: &mut Surface, rect: Rect, color: Color, color2: Color, gly
     );
 }
 
+/// The ink for a glyph on a tile of `color`: white wherever white reads at
+/// 3:1, the brand ground where it does not (docs/ui-design.md, 2.5).
+///
+/// Not "whichever contrasts more": white is what every other tile on the
+/// desktop draws its glyph in, and a set of tiles that switched ink on a
+/// fraction would read as two kinds of tile.
 fn tile_ink(color: Color) -> Color {
     if WHITE.contrast(color) >= 3.0 {
         WHITE

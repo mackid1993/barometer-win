@@ -56,9 +56,9 @@ pub struct ProcessMemory {
 ///
 /// Bytes throughout. Total, in use and available come from the strip's own
 /// module; the commit figures, the pools and the process list from
-/// barometer-core's sys::processes. The standby/modified/free split is a
-/// SystemMemoryListInformation query nobody has written yet, and until then
-/// the bar shows in use against available.
+/// barometer-core's sys::processes, and the standby/modified/free split from
+/// its SystemMemoryListInformation query. The bar falls back to in use
+/// against available while that split is missing.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MemorySnapshot {
     /// From MemoryModule::used_and_total, or `from_module`.

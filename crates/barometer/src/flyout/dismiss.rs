@@ -5,7 +5,7 @@
 //
 // When a flyout should go away, ported from PopoverDismissalMonitor.swift.
 //
-// The Mac monitor watches the pointer fifty times a second and closes the
+// The Mac monitor watches the pointer every fifty milliseconds and closes the
 // panel a second after the pointer has left it, because a menu bar dropdown
 // on macOS is a thing you hover. Windows' own tray flyouts do not work that
 // way: they stay until the user clicks somewhere else or the window loses

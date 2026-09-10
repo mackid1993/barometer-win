@@ -1,8 +1,8 @@
 # Barometer for Windows — handoff
 
-Written 2026-09-08, at version **1.0.10**. Everything below is true of the
-uncommitted tree on top of `ab2f0fa` (master); see section 4 for why it is
-uncommitted.
+Written 2026-09-08 and kept current since, at version **1.0.0** - what
+`Cargo.toml` carries and `.\version.ps1` prints. Everything below is true of
+the working tree; see section 4 for what is committed and what is not.
 
 Read `AGENTS.md` first — it holds the decisions, not just the conventions, and
 several of them look arbitrary until you know why. This document is the state of
@@ -13,26 +13,27 @@ play and the work queue.
 ## 1. What this is
 
 A taskbar system monitor for Windows 11, in Rust against Win32 directly. It is a
-**port of the macOS app**, which is checked out beside it at `../macOS`. Same
-name, same design, no shared code. Port means: read the Swift, then write the
-Rust. It does not mean invent something similar.
+**port of the macOS app**, which lives in its own repository,
+`mackid1993/Barometer`, and is read through `gh api` rather than checked out
+beside this one (AGENTS.md gives the command). Same name, same design, no
+shared code. Port means: read the Swift, then write the Rust. It does not mean
+invent something similar.
 
-Layout:
+Layout - this repository holds this app and nothing else:
 
 ```
-Barometer/
-  README.md            the repository landing page, covers both apps
-  .github/workflows/   check|macos|release|tests.yml are macOS; windows.yml is ours
-  macOS/               the Swift app. Read it. Never edit it.
-  Win32/               this app
-    crates/barometer-core   modules, sensors, weather, settings, store. No UI.
-    crates/barometer        lib `barometer_app`: window, settings_ui, flyout, tray
-    crates/barometer-bin    bin `barometer`: main.rs and nothing else
-    helper/                 .NET 10 sensor helper (BarometerSensorsHelper)
-    installer/barometer.iss Inno Setup script
-    scripts/build.ps1       local build + stage + package
-    version.ps1             reads/sets the version
-    scrub-check.ps1         refuses a binary carrying local paths
+barometer-win/
+  README.md            the landing page for the Windows app
+  .github/workflows/   build.yml, the only workflow: manual, builds an installer
+  crates/barometer-core   modules, sensors, weather, settings, store. No UI.
+  crates/barometer        lib `barometer_app`: window, settings_ui, flyout, tray
+  crates/barometer-bin    bin `barometer`: main.rs and nothing else
+  docs/                   ui-design.md and ui-layouts.md, the v1 design specs
+  helper/                 .NET 10 sensor helper (BarometerSensorsHelper)
+  installer/barometer.iss Inno Setup script
+  scripts/build.ps1       local build + stage + package
+  version.ps1             reads/sets the version
+  scrub-check.ps1         refuses a binary carrying local paths
 ```
 
 The lib/bin split exists because build-script link args reach every target
@@ -64,33 +65,43 @@ was prompting for UAC. `barometer-bin` sets `test = false`.
 Local:
 
 ```powershell
-cd Win32
 .\scripts\build.ps1              # builds, stages, packages, prints the SHA-256
-.\scripts\build.ps1 -SkipInstaller
+.\scripts\build.ps1 -SkipInstaller -SkipHelper -Run
 .\version.ps1                    # print the version
 .\version.ps1 -Bump patch
 ```
 
-CI is `.github/workflows/windows.yml`, modeled exactly on `mackid1993/Yamato`.
-Manual dispatch only — no push or pull_request trigger, deliberately. Inputs:
+`build.ps1` remaps the source paths out of the binary, builds the workspace in
+release, publishes the .NET helper, stages the exe, `LICENSE.md`, `NOTICE.md`
+and the icon into `<target>\dist\Barometer`, **refuses any staged executable
+still carrying a local path**, then runs ISCC and prints the installer's
+SHA-256.
+
+CI is `.github/workflows/build.yml`, modeled on `mackid1993/Yamato`. Manual
+dispatch only — no push or pull_request trigger, deliberately. Inputs:
 `version`, `publish` (drafts a release), `notes`. It stamps the version with
-`version.ps1`, **verifies the stamp landed**, remaps paths, tests, builds,
-publishes the .NET helper, runs `scrub-check.ps1` over both executables, then
-ISCC.
+`version.ps1`, **verifies the stamp landed** in both `Cargo.toml` and
+`installer\barometer.iss`, runs `cargo test --workspace` in debug, makes sure
+Inno Setup is on the image, and then runs `scripts\build.ps1` — which is what
+keeps the local build and the release build from drifting.
 
-**Tags are `windows-v1.0.10`, not `v1.0.10`.** The macOS app owns the plain tag
-in this same repository, and `update.rs` matches the prefix so the updater can
-never offer a Windows user a macOS release. The asset name
-`Barometer-Setup-<version>.exe` is matched exactly by `update.rs::installer()` —
-renaming it breaks in-app updates silently while the download page looks fine.
+**Tags are plain `v1.0.0`.** They used to carry a `windows-` prefix, back when
+one repository held both apps and the updater had to avoid offering a Windows
+user a DMG; the two have a repository each now, and `update.rs` matches `v`.
+The asset name `Barometer-Setup-<version>.exe` is matched exactly by
+`update.rs::installer()` — renaming it breaks in-app updates silently while the
+download page looks fine.
 
-Version is **1.0.10 to match macOS**. They release independently; the number is
-kept in step so a user with both is not comparing two numbering schemes.
+Version is **1.0.0**, and the two apps' numbers do not line up. They are
+separate programs with separate features and separate release schedules, so
+forcing one ordering on both only ever confused somebody.
 
 ### Never build a shippable binary carelessly
 
 `scrub-check.ps1` exists because this repo lives under a directory named after
-its author, inside a synced folder also named after him. Its patterns are all
+its author, inside a synced folder also named after him. It is run by hand
+against one binary; `build.ps1` carries the same check inline over everything
+it stages, so a release cannot be packaged without it. Its patterns are all
 **path** forms on purpose: the version resource legitimately contains
 `(c) 2026 David Brustein. GNU GPL v3.` and the first draft of the check failed a
 correct build over it. A check that cries wolf is one somebody starts bypassing.
@@ -206,9 +217,11 @@ capture harness in `scripts/capture/` (section 8), not inferred from the code.
   as headings with one colon, per-metric figures (`Module::stack_value`).
 - **GPU choice**: every adapter the kernel lists, keyed by name and ordinal;
   Automatic is the adapter with the most dedicated memory.
-- Settings window: Strip / Sensors Configuration / Weather / Appearance /
-  General / About - that is `Pane::ALL`'s order, which is what Ctrl+Tab and the
-  arrow keys walk. The weather flyout's gear opens the Weather pane.
+- Settings window: Strip / a page each for CPU, GPU, Memory, Disks, Network,
+  Sensors and Weather / Stacks / Appearance / General / About - that is
+  `Pane::ALL`'s order, which is what Ctrl+Tab and the arrow keys walk. The
+  sensor source and the weather locations are sections on their own module's
+  page; a flyout's gear opens the page for the module it belongs to.
 - Settings drive the strip live; fonts resolve through `instance_family`
   (real Semibold face, cache invalidated on weight or family change);
   `ANTIALIASED_QUALITY` text.
@@ -223,9 +236,10 @@ on a build agent with none of it.
 
 ### Not done
 
-- **Nothing is committed.** The whole tree on top of `ab2f0fa` (master) is
-  uncommitted work from one long session, at the user's instruction: commit
-  only when he says the word. Do not squash it into one commit without asking.
+- **Committing is the user's call, not yours.** The session's work has since
+  gone in as a series of commits on `master`, and there is usually a day's
+  work in the working tree on top of them. Commit only when he says the word,
+  and do not squash what is there into one commit without asking.
 - The trace instrumentation is gated on `%LOCALAPPDATA%\Barometer\trace.on`
   or the `BAROMETER_TRACE` variable (`trace.rs`), and is harmless. The
   `click column N -> ...` line is written by the app's main loop where the
@@ -248,8 +262,14 @@ on a build agent with none of it.
   `modules/memory.rs`: pressure is commit charge against its limit (what the
   panel's Commit chip grades), swap is the page file in use
   (`SystemPageFileInformation`, hand-declared in `sys/processes.rs`).
-- `docs/ui-design.md` and `docs/ui-layouts.md` still describe the tile-based
-  settings rows that were replaced. They are wrong now.
+- `docs/ui-design.md` and `docs/ui-layouts.md` were written before the app
+  existed. They have been reconciled with it - the nav, the module pages, the
+  strip's one text size, the 3 DIP gap, the slot pitch - and every section
+  describing something that was never built now says so in a line rather than
+  having been deleted: themes and the backplate (design §2.6, §2.7), the
+  Taskbar pane (layouts §5), the Colors card, export/import and reset
+  (layouts §4, §6). Those notes are the standing list of what the design asks
+  for and the app does not do yet.
 
 ### 5.2 One that was wrong for a long time, in case it recurs
 

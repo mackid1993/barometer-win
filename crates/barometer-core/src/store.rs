@@ -58,12 +58,14 @@ use crate::weather::models::{
 
 /// The gap between columns a fresh install lays out with, in DIPs.
 ///
-/// These two repeat the figures `barometer::window` is drawing with today,
-/// where they are private constants of that crate. They belong in one place
-/// once the strip reads its layout from here instead of from its own consts.
-pub const DEFAULT_COLUMN_GAP_DIP: f32 = 14.0;
-/// The padding at each end of the strip a fresh install lays out with, in DIPs.
-pub const DEFAULT_PADDING_DIP: f32 = 8.0;
+/// Compact from the first run, and that is deliberate. On a taskbar the
+/// readout competes for room with the task buttons, and the task list gives
+/// that room up a whole button at a time: every pixel the readout spends
+/// between its columns is a pixel that can tip another button into the
+/// overflow menu. Three is enough that two columns of digits still read as
+/// two numbers rather than one long one, and no wider. Fourteen, the first
+/// figure, was far too much.
+pub const DEFAULT_COLUMN_GAP_DIP: f32 = 3.0;
 
 /// What the strip's layout will accept for the gap and the padding, in DIPs.
 ///
@@ -143,7 +145,6 @@ pub struct Settings {
     /// The strip, in strip order, with each module's own item switched on or off.
     pub modules: Vec<ModuleEntry>,
     pub column_gap_dip: f32,
-    pub padding_dip: f32,
     /// Whether the network column puts upload above download.
     ///
     /// Download over upload is the macOS app's order and the default here, but
@@ -214,7 +215,6 @@ impl Default for Settings {
                 .map(|id| ModuleEntry { id, enabled: shown_on_a_fresh_install(id) })
                 .collect(),
             column_gap_dip: DEFAULT_COLUMN_GAP_DIP,
-            padding_dip: DEFAULT_PADDING_DIP,
             network_upload_first: false,
             network_unit: RateUnit::default(),
             network_shows_public_ip: false,
@@ -336,18 +336,9 @@ impl Store {
             }
         };
 
-        // Notepad, and Windows PowerShell's `Set-Content -Encoding utf8`,
-        // put a byte order mark in front of UTF-8. The parser refuses it,
-        // and a person who has just edited their settings by hand and been
-        // told the file is corrupt has been told wrong.
-        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-        let document = match serde_json::from_slice::<Value>(bytes) {
-            Ok(document @ Value::Object(_)) => document,
-            // Valid JSON of the wrong shape is as unusable as invalid JSON,
-            // and a zero-length file - which is what a crash mid-write used to
-            // leave before saves became atomic - lands here too.
-            Ok(_) => return self.set_aside("is not a settings document"),
-            Err(why) => return self.set_aside(&format!("is not valid JSON: {why}")),
+        let document = match Self::document_from(&bytes) {
+            Ok(document) => document,
+            Err(why) => return self.set_aside(&why),
         };
 
         let settings = decode(&document);
@@ -357,7 +348,34 @@ impl Store {
         Load { settings, corrupt: None }
     }
 
-    /// Moves an unusable file out of the way and returns defaults.
+    /// Reads a settings document out of bytes, touching no file.
+///
+/// What `load` does between reading and decoding, on its own, for a file
+/// the user pointed at rather than the one the store owns. An import goes
+/// through here because `load` moves a file it cannot read out of the way,
+/// which is right for its own file and unforgivable for somebody else's.
+pub fn parse(bytes: &[u8]) -> Result<Settings, String> {
+    Self::document_from(bytes).map(|document| decode(&document))
+}
+
+/// The JSON object in some bytes, or why there is not one.
+fn document_from(bytes: &[u8]) -> Result<Value, String> {
+    // Notepad, and Windows PowerShell's `Set-Content -Encoding utf8`, put a
+    // byte order mark in front of UTF-8. The parser refuses it, and a person
+    // who has just edited their settings by hand and been told the file is
+    // corrupt has been told wrong.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(document @ Value::Object(_)) => Ok(document),
+        // Valid JSON of the wrong shape is as unusable as invalid JSON, and a
+        // zero-length file - which is what a crash mid-write used to leave
+        // before saves became atomic - lands here too.
+        Ok(_) => Err("is not a settings document".to_string()),
+        Err(why) => Err(format!("is not valid JSON: {why}")),
+    }
+}
+
+/// Moves an unusable file out of the way and returns defaults.
     ///
     /// Moved, never deleted and never written over: it holds whatever the user
     /// had configured, and a corrupt file is often one bad byte away from
@@ -592,15 +610,12 @@ fn encode(settings: &Settings) -> Value {
             "headingFamily": optional(&settings.font.heading_family),
             "weight": settings.font.weight.raw_value(),
             "headingWeight": settings.font.heading_weight.raw_value(),
-            "maxSizeDip": settings.font.max_size_dip
-                .clamp(StripFont::MIN_SIZE_DIP, StripFont::MAX_SIZE_DIP),
         },
         "modules": settings.modules.iter().map(|entry| json!({
             "id": entry.id.key(),
             "enabled": entry.enabled,
         })).collect::<Vec<Value>>(),
         "columnGapDip": spacing(settings.column_gap_dip),
-        "paddingDip": spacing(settings.padding_dip),
         "networkUploadFirst": settings.network_upload_first,
         "networkUnit": settings.network_unit.raw_value(),
         "networkShowsPublicIP": settings.network_shows_public_ip,
@@ -686,9 +701,6 @@ fn decode(document: &Value) -> Settings {
             heading_weight: text(font, "headingWeight")
                 .and_then(|raw| FontWeight::from_raw(&raw))
                 .unwrap_or(defaults.font.heading_weight),
-            max_size_dip: number(font, "maxSizeDip")
-                .map(|dip| (dip as f32).clamp(StripFont::MIN_SIZE_DIP, StripFont::MAX_SIZE_DIP))
-                .unwrap_or(defaults.font.max_size_dip),
         },
         modules: decode_modules(document.get("modules")),
         column_gap_dip: number(root, "columnGapDip")
@@ -703,9 +715,6 @@ fn decode(document: &Value) -> Settings {
             .unwrap_or(defaults.network_shows_public_ip),
         // An empty name is nobody's interface and means the same as absent.
         network_interface: text(root, "networkInterface").filter(|name| !name.trim().is_empty()),
-        padding_dip: number(root, "paddingDip")
-            .map(|dip| spacing(dip as f32))
-            .unwrap_or(defaults.padding_dip),
         weather: decode_weather(document.get("weather")),
         sensors: decode_sensors(document.get("sensors")),
         stacks: decode_stacks(document.get("stacks"), number(root, "nextStackId")),
@@ -1000,7 +1009,6 @@ mod tests {
                 heading_family: Some("Segoe UI Semibold".into()),
                 weight: FontWeight::Semibold,
                 heading_weight: FontWeight::Bold,
-                max_size_dip: 10.5,
             },
             modules: vec![
                 ModuleEntry { id: ModuleId::Weather, enabled: true },
@@ -1012,7 +1020,6 @@ mod tests {
                 ModuleEntry { id: ModuleId::Disks, enabled: true },
             ],
             column_gap_dip: 20.0,
-            padding_dip: 3.5,
             network_upload_first: true,
             network_unit: RateUnit::Bits,
             network_shows_public_ip: true,
@@ -1248,13 +1255,29 @@ mod tests {
     }
 
     #[test]
+    fn a_file_the_store_wrote_reads_back_through_parse_unchanged() {
+        let scratch = Scratch::new("parse");
+        let mut settings = Settings::default();
+        settings.column_gap_dip = 9.5;
+        Store::at(scratch.settings()).save(&settings).unwrap();
+        let bytes = fs::read(scratch.settings()).unwrap();
+        assert_eq!(Store::parse(&bytes).unwrap(), settings);
+        // Notepad's byte order mark is forgiven here as it is on load.
+        let mut marked = b"\xEF\xBB\xBF".to_vec();
+        marked.extend_from_slice(&bytes);
+        assert_eq!(Store::parse(&marked).unwrap(), settings);
+        // And a non-document is refused, with the file left where it was.
+        assert!(Store::parse(b"[1, 2]").is_err());
+        assert!(Store::parse(b"{").is_err());
+        assert!(scratch.settings().exists());
+    }
+
+    #[test]
     fn an_out_of_range_number_is_clamped_rather_than_refused() {
         let scratch = Scratch::new("clamping");
         scratch.write(
             r#"{
-              "font": { "maxSizeDip": 400 },
               "columnGapDip": -5,
-              "paddingDip": 9000,
               "weather": { "refreshIntervalMinutes": 0 },
               "sensors": { "pollSeconds": 100000 },
               "checkForUpdates": false
@@ -1262,9 +1285,7 @@ mod tests {
         );
 
         let settings = Store::at(scratch.settings()).load().settings;
-        assert_eq!(settings.font.max_size_dip, StripFont::MAX_SIZE_DIP);
         assert_eq!(settings.column_gap_dip, MIN_SPACING_DIP);
-        assert_eq!(settings.padding_dip, MAX_SPACING_DIP);
         assert_eq!(settings.weather.refresh_interval_minutes, 5);
         assert_eq!(settings.sensors.poll_seconds, MAX_POLL_SECONDS);
         // One bad number costs that number and nothing else.

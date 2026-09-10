@@ -100,7 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_system_volume_is_found_with_a_size_and_a_mount() {
+    fn the_c_drive_is_found_with_a_size_and_a_mount() {
         let found = volumes();
         let system = found.iter().find(|v| v.mount.eq_ignore_ascii_case("C:")).expect("C: exists");
         assert!(system.total > 0);

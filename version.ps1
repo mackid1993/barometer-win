@@ -8,17 +8,16 @@
 # usable on its own.
 #
 #   version.ps1              print the current version
-#   version.ps1 1.0.11       set it
-#   version.ps1 -Bump patch  1.0.10 -> 1.0.11
-#   version.ps1 -Bump minor  1.0.10 -> 1.1.0
-#   version.ps1 -Bump major  1.1.0  -> 2.0.0
+#   version.ps1 1.0.1        set it
+#   version.ps1 -Bump patch  1.0.0 -> 1.0.1
+#   version.ps1 -Bump minor  1.0.0 -> 1.1.0
+#   version.ps1 -Bump major  1.1.0 -> 2.0.0
 #
-# The Windows app is versioned in step with the macOS one, which is why this
-# starts at 1.0.10 rather than at 0.1.0: they are separate programs that share
-# a name, and a user who has both should not have to work out which numbering
-# belongs to which. They still release on their own schedules and under their
-# own tags - `windows-v1.0.10` here, `v1.0.10` there - so matching the number
-# costs nothing and reads as one product.
+# The Windows app has its own numbering, starting at 1.0.0, and the macOS app
+# has its own. They were kept in step while one repository held both, along
+# with a `windows-v` tag prefix to tell the releases apart; the two have a
+# repository each now, the tags here are plain `v1.0.0`, and forcing one
+# ordering on two programs with different features only ever confused somebody.
 
 param(
     [Parameter(Position = 0)][string]$Version,

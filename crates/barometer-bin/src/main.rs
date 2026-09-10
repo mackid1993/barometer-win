@@ -170,17 +170,6 @@ fn sensors_module() -> SensorsModule {
 }
 
 
-/// What the settings window shows that is not a setting.
-///
-/// Built here and pushed, rather than sampled over there, because this is the
-/// thread that owns the modules. The window asking the sensor helper itself
-/// would mean two readers of one process, each paying for the other's walk of
-/// every device on the machine.
-///
-/// Without this the window's snapshot stayed at its default for the life of the
-/// program: the Sensors pane said "Waiting for the sensor helper" on a machine
-/// that had been reporting temperatures for minutes, the pin picker had nothing
-/// to pick from, and the preview drew invented numbers.
 /// A graphics reading that only the sensor source has, formatted for a stack.
 ///
 /// The adapter is the one the panel names: the chosen one, or the first the
@@ -207,6 +196,16 @@ fn gpu_from_sensors(
 }
 
 /// What the settings window and the strip's preview are drawn from.
+///
+/// Built here and pushed, rather than sampled over there, because this is the
+/// thread that owns the modules. The window asking the sensor helper itself
+/// would mean two readers of one process, each paying for the other's walk of
+/// every device on the machine.
+///
+/// Without this the window's snapshot stayed at its default for the life of the
+/// program: the Sensors pane said "Waiting for the sensor helper" on a machine
+/// that had been reporting temperatures for minutes, the pin picker had nothing
+/// to pick from, and the preview drew invented numbers.
 ///
 /// `for_settings` decides how much of it is built. The strip's preview needs
 /// the readouts, the sensors and the stack readings and nothing else; the
@@ -442,8 +441,9 @@ fn main() {
     }
 
     if env::args().any(|a| a == "--install-lhm") {
-        // The settings pane will own this. Until it exists, this is how the
-        // fetch gets exercised against a real machine.
+        // The settings pane owns this now. Kept as a diagnostic because it
+        // prints every step the pane draws as a progress bar, which is what
+        // you want when the fetch itself is the thing being watched.
         match lhm_install::install(Some(&|progress| println!("  {progress:?}"))) {
             Ok(directory) => {
                 println!("LibreHardwareMonitor installed to {}", directory.display())
@@ -484,8 +484,7 @@ fn main() {
         Some(bar) => {
             if diagnostic {
                 let font = StripFont::default();
-                let density =
-                    Density::choose_with_font(bar.height() as f32, modules.len(), &font);
+                let density = Density::choose(bar.height() as f32);
                 println!(
                     "Taskbar: {:?} edge, {}x{}, supported={}",
                     bar.edge,
@@ -494,12 +493,11 @@ fn main() {
                     bar.edge.is_supported()
                 );
                 println!(
-                    "Layout:  {}dip {} {}, {} row(s) for {} widgets",
+                    "Layout:  {}dip {} {}, {} row(s)",
                     density.text_dip,
                     font.family,
                     font.weight.raw_value(),
-                    if density.two_rows { 2 } else { 1 },
-                    modules.len()
+                    if density.two_rows { 2 } else { 1 }
                 );
             }
             if !bar.edge.is_supported() {
@@ -703,8 +701,8 @@ fn wants_temperatures(settings: &barometer_core::store::Settings) -> bool {
 ///
 /// Sampling and painting share this thread. The modules are a handful of
 /// syscalls each, so the work per tick is far below the frame it sits in; the
-/// sensor helper is the exception and belongs on its own thread before it is
-/// wired in here.
+/// sensor helper is the exception and has a thread of its own, because one
+/// read walks every device on the machine and takes hundreds of milliseconds.
 fn run_strip(mut modules: Vec<Box<dyn Module>>) {
     use std::time::{Duration, Instant};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1462,16 +1460,20 @@ The file it could not read has been kept, at:
                 flyout.close();
             }
 
-            // The ladder is in DIPs and the bar is measured in pixels, so the
-            // bar has to be converted before it is compared with type sizes.
-            // Skipping this makes the strip a third too small at 150%, which
-            // reads as a font bug rather than a unit one.
+            // Type sizes are in DIPs and the bar is measured in pixels, so the
+            // bar has to be converted before anything compares the two.
+            // Skipping this reads a 150% bar as half again as tall as it is, so
+            // a bar with no room for a second row is handed one - which looks
+            // like a layout bug rather than a unit one.
             let height_dip = bar.height() as f32 * 96.0 / dpi as f32;
             if trace::on() {
                 trace::line(&format!("bar {}px dpi {dpi} -> {height_dip}dip", bar.height()));
             }
-            // The strip is what the settings say it is: the modules the user
-            // switched on, in the order they arranged them.
+            // The strip is what the settings say it is: modules and stacks
+            // in the order the user arranged them, a module's own column
+            // gone while a stack that hides it is on. The cells come from the
+            // same function the settings preview draws with, so the preview
+            // and the strip cannot disagree about what a stack looks like.
             //
             // Every module keeps running whether or not it is shown. Rebuilding
             // the list on each change would restart them, and a restarted
@@ -1479,19 +1481,11 @@ The file it could not read has been kept, at:
             // would report one tick of nonsense every time somebody toggled
             // anything, and the sensor helper would be respawned, which costs
             // a second and a process.
-            // The strip is what the settings say it is: modules and stacks
-            // in the order the user arranged them, a module's own column
-            // gone while a stack that hides it is on. The cells come from the
-            // same function the settings preview draws with, so the preview
-            // and the strip cannot disagree about what a stack looks like.
             // Only while there is a window to draw them in - see `snapshot`.
             let for_settings = settings_window.as_ref().is_some_and(|open| open.is_open());
             let live = snapshot(&modules, height_dip, &settings, for_settings);
 
-            // The type ladder steps down as the strip fills, so it counts what
-            // is actually shown rather than every module that exists.
-            let density =
-                Density::choose_with_font(height_dip, model.shown_count().max(1), &font);
+            let density = Density::choose(height_dip);
 
             let cells = settings_ui::preview::cells(&model, &live, density.two_rows);
             // Every stack has a panel, registered the first time it is seen
@@ -1556,7 +1550,6 @@ The file it could not read has been kept, at:
             let needed = strip.update(window::StripModel {
                 columns,
                 gap_dip: settings.column_gap_dip,
-                padding_dip: settings.padding_dip,
                 monochrome: false,
                 text_dip: density.text_dip,
                 two_rows: density.two_rows,

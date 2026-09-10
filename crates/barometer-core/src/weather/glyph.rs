@@ -44,10 +44,12 @@
 // thunder. The pairs are listed in SHARED_GLYPHS and asserted there, so a
 // collapse cannot be introduced or removed without saying so.
 //
-// This is a real cost against the project's rule that conditions differ in
-// shape and never only in color, and it is not hidden: five pairs are now
-// indistinguishable on a monochrome strip. Keep badge.rs until the sheet has
-// been judged against it.
+// That would have cost the project's rule that conditions differ in shape and
+// never only in color five pairs. What saves it is `composed` below, which
+// draws the nine in combination - a sun *behind* a cloud, a bolt over one -
+// and gets all fourteen back as distinct shapes. It is what every painter
+// calls; the single-glyph mapping is kept beside it for the record and for
+// its tests.
 
 use super::badge::Condition;
 
@@ -74,11 +76,13 @@ pub const SHARED_GLYPHS: [(Condition, Condition); 5] = [
     (Condition::Thunder, Condition::Thunderstorm),
 ];
 
-/// The character that draws a condition.
+/// The one character a condition would be drawn with, where one had to do.
 ///
-/// The match is exhaustive on purpose: a condition added to the enum has to be
-/// given a mark here before this compiles, which is the only way a fourteenth
-/// case does not end up silently drawing the question mark.
+/// Nothing paints from this - `composed` is what the painters call. It is kept
+/// for the record of which nine marks the font actually has, and for the tests
+/// below that hold the mapping to them. The match is exhaustive on purpose: a
+/// condition added to the enum has to be given a mark here before this
+/// compiles.
 pub fn glyph(condition: Condition) -> char {
     match condition {
         // A sun with detached rays. The other suns in the font differ from it
@@ -275,7 +279,8 @@ const BENEATH: (f32, f32, f32) = (0.30, 0.32, 0.58);
 
 /// The mark for a condition, as one glyph or two.
 ///
-/// Every one of the fourteen is a distinct pair, which is asserted below. The
+/// Eight of the fourteen are one glyph and six are a pair, and all fourteen
+/// are distinct, which is asserted below. The
 /// shape rule from `badge.rs` survives: nothing here depends on color.
 pub fn composed(condition: Condition) -> Composed {
     let one = |base: char| Composed { base, accent: None };

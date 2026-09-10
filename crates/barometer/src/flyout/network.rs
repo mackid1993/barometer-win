@@ -9,12 +9,11 @@
 // download and upload drawn over one another, what is using the network,
 // the connection's addresses, and the Wi-Fi card when there is a radio. The
 // order is the Mac's and so is every card's content; what differs is how
-// much of it Windows collects yet. The strip's NetworkModule sums bytes in
-// and out across every active interface and knows nothing else about them,
-// so the interface reads as "All interfaces", the connection card says that
-// addresses are not collected, and the Wi-Fi card waits for a radio to be
-// reported. Each of those is a typed input here, so the day core answers
-// the cards fill in without the layout changing.
+// much of it Windows will say on a given machine. The strip's NetworkModule
+// sums bytes in and out; the interface's name and addresses come from
+// `netinfo` beside it and the Wi-Fi card from the radio when there is one.
+// Each of those is a typed input here, so a machine that answers none of
+// them draws the same cards with a calm line in them rather than an error.
 //
 // Nothing here draws. `build` lays elements out in DIPs through the shared
 // Builder and the chrome paints them.
@@ -61,8 +60,8 @@ const SIGNAL_GOOD: Color = Color(0x34C759);
 /// What is known about the connection carrying the rates, as the Mac's
 /// NetworkInterfaceSample and the sample's router and DNS.
 ///
-/// Every field starts empty, which is the honest state until core learns
-/// to name the interface and read its addresses.
+/// Every field starts empty, which is the honest state until the first
+/// sample and on a machine that will not name its interface.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Connection {
     /// The interface's friendly name, "Ethernet". None reads as every
@@ -415,8 +414,8 @@ impl Content for NetworkContent {
 }
 
 /// One process, from ProcessRow with the two rates stacked at its right in
-/// the order the user chose, and the neutral mark at its left where the Mac
-/// draws the application's icon.
+/// the order the user chose, and its application's icon at the left, where
+/// the Mac draws one.
 fn process_row(b: &mut Builder, s: &NetworkSnapshot, process: &Process, accent: Accent) {
     let row = Rect::new(b.inner_x(), b.y(), b.inner_w(), PROCESS_ROW_H);
     // The arrows are U+2193 and U+2191 as escapes, for the reason the
@@ -439,7 +438,8 @@ fn tile(label: &str, value: String) -> Tile {
     Tile { icon: TileIcon::None, label: label.to_string(), value, tint: Ink::Secondary }
 }
 
-/// The Mac's signalColor: red below -80 dBm, orange to -67, green above.
+/// The Mac's signalColor: red at -80 dBm and below, orange to -67, green
+/// above.
 pub fn signal_color(rssi: i32) -> Color {
     if rssi <= -80 {
         SIGNAL_POOR

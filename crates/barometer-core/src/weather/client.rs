@@ -7,8 +7,9 @@
 //
 // Open-Meteo needs no account and no key, which is why both apps use it: a
 // weather readout that stops working when a free tier is withdrawn is worse
-// than no weather readout. Three endpoints are used and they are separate
-// hosts, so each one is named where it is called rather than shared.
+// than no weather readout. The forecast, the geocoder and the two address
+// lookups are separate hosts, as is the air-quality service in `air.rs`, so
+// each one is named where it is called rather than shared.
 
 use serde_json::Value;
 
@@ -18,7 +19,7 @@ use crate::weather::models::{Location, WeatherUnits};
 const FORECAST_HOST: &str = "api.open-meteo.com";
 const GEOCODING_HOST: &str = "geocoding-api.open-meteo.com";
 
-/// The fields asked for, in the order they are read back.
+/// The fields asked for. The parser reads them by name, in its own order.
 ///
 /// Kept as one constant because the request and the parser have to agree, and
 /// the way they stop agreeing is somebody adding a field to one of them.

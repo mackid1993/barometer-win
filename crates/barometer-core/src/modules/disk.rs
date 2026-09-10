@@ -45,10 +45,10 @@ pub struct DiskModule {
     reading: bool,
     /// Every physical disk as the counters last saw it, for the panel.
     devices: Vec<DiskDevice>,
-    /// The system volume's used and total bytes, for the stack readings
+    /// The chosen volume's used and total bytes, for the stack readings
     /// that are about space rather than throughput. Re-read every so
     /// often: free space moves slowly and the call is not free.
-    system_volume: Option<(u64, u64)>,
+    volume_space: Option<(u64, u64)>,
     /// Where the scan leaves its answer, and whether one is already out.
     ///
     /// On a thread, because `volumes()` asks every drive letter for its size
@@ -83,7 +83,8 @@ pub struct DiskModule {
 ///
 /// The counters call a disk "0 C:" or "1 D: E:" - its number and the
 /// letters mounted on it - which is a name a person can place. The model
-/// string needs a device ioctl and is not read yet.
+/// string needs a device ioctl, so it is asked for on a thread and is absent
+/// for a tick or two after a disk is first seen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DiskDevice {
     /// The counter instance, "0 C:".
@@ -134,7 +135,7 @@ impl DiskModule {
             write: 0.0,
             reading: false,
             devices: Vec::new(),
-            system_volume: None,
+            volume_space: None,
             scanned: Arc::new(Mutex::new(None)),
             known_volumes: Vec::new(),
             volume: None,
@@ -274,7 +275,7 @@ impl Module for DiskModule {
             }
         }
         let wanted = self.volume.clone().unwrap_or_else(boot_volume);
-        self.system_volume = self
+        self.volume_space = self
             .known_volumes
             .iter()
             .find(|v| v.mount.eq_ignore_ascii_case(&wanted))
@@ -317,10 +318,10 @@ impl Module for DiskModule {
             DiskRead => self.reading.then(|| format::rate(self.read)),
             DiskWrite => self.reading.then(|| format::rate(self.write)),
             DiskUsedPercent => self
-                .system_volume
+                .volume_space
                 .filter(|(_, total)| *total > 0)
                 .map(|(used, total)| format::percent(used as f32 / total as f32)),
-            DiskFreeBytes => self.system_volume.map(|(used, total)| format::bytes(total.saturating_sub(used))),
+            DiskFreeBytes => self.volume_space.map(|(used, total)| format::bytes(total.saturating_sub(used))),
             _ => None,
         }
     }
@@ -333,7 +334,15 @@ impl Module for DiskModule {
         if !self.reading {
             return Readout::unavailable();
         }
-        Readout::two(format::rate(self.read), format::rate(self.write)).reserving("000 MB/s")
+        // Reserved from the formatter's own widest output rather than from a
+        // hand-written approximation of it. "000 MB/s" was a character short:
+        // the units are binary and the number decimal, so a rate stays in
+        // megabytes right up to 1024 of them and `three_figures` prints
+        // "1024" - and the column grew by that character the first time a
+        // disk got busy, shoving everything to its right sideways. Disks are
+        // bytes whatever the network is shown in; there is no setting.
+        Readout::two(format::rate(self.read), format::rate(self.write))
+            .reserving(format::RateUnit::Bytes.widest())
     }
 }
 
@@ -344,6 +353,29 @@ mod tests {
 
     fn instance(name: &str, value: f64) -> Instance {
         Instance { name: name.to_string(), value }
+    }
+
+    #[test]
+    fn no_disk_rate_is_wider_than_the_width_the_column_reserves() {
+        // The column holds a fixed width so the columns beside it stay put,
+        // and "000 MB/s" was a character short of what `format::rate` prints:
+        // binary units and a decimal number keep a rate in megabytes to 1024
+        // of them. A busy NVMe reaches those figures, so this was not
+        // theoretical.
+        let mut module = DiskModule::default();
+        module.reading = true;
+        let reserved = module.readout().reserved.expect("the column reserves a width");
+        let mega = 1024.0 * 1024.0;
+        for bytes_per_sec in
+            [0.0, 1.0, 1500.0, 9.99 * mega, 999.0 * mega, 1023.9 * mega, 8.0 * 1024.0 * mega]
+        {
+            module.read = bytes_per_sec;
+            module.write = bytes_per_sec;
+            let readout = module.readout();
+            for line in [&readout.primary, readout.secondary.as_ref().expect("two rates")] {
+                assert!(line.len() <= reserved.len(), "{line} against {reserved}");
+            }
+        }
     }
 
     #[test]
@@ -377,9 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn the_total_is_never_double_counted_in_the_fallback() {
-        // The fallback must exclude _Total, or a machine that reports it plus
-        // its disks would read twice the real rate.
+    fn one_disk_on_its_own_is_the_whole_machines_rate() {
         let values = vec![instance("0 C:", 100.0)];
         assert_eq!(total_of(&values), 100.0);
     }

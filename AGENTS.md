@@ -73,9 +73,11 @@ Follow Clicker and Yamato, which already do this:
   `update_box.rs`, checking GitHub releases.
 - `winresource` in `build.rs` to embed the icon and version into the executable, or the
   binary shows the generic default in Explorer, the taskbar and Alt+Tab.
-- The app icon is the macOS one, `assets/AppIcon.png`, 1024x1024. It needs converting to a
-  multi-size `.ico`; the macOS squircle carries padding that reads small at 16px, so the
-  small sizes want a tighter crop than 128/256.
+- The app icon is the macOS one, `assets/AppIcon.png`, 1024x1024. `scripts\make-icon.ps1`
+  packs it into the multi-size `assets/barometer.ico` the build embeds, measuring and
+  cropping the macOS squircle's transparent margin - which reads small at 16px - and
+  resampling every size from the 1024 rather than from the size above. `build.ps1` re-runs
+  it whenever the artwork is newer than the icon.
 
 ## The one architectural divergence
 
@@ -121,9 +123,9 @@ assumed**, and the strip has to lay out at whatever it gets:
 
 - Two-row items (label over value) only when the height actually admits two legible rows
   at the current DPI. Otherwise fall back to one row.
-- This interacts with the Mac app's text-size ladder, which steps type down as more
-  widgets are enabled. On Windows there are two axes, widget count and taskbar height, and
-  the smaller of the two answers wins.
+- The Mac app's text-size ladder, which steps type down as more widgets are enabled, is
+  not ported. The strip draws at one size, 9 DIP, and only the row count follows the bar's
+  height; `Density` in `barometer-core/src/taskbar.rs` says why.
 - Recompute on `ABN_POSCHANGED`, on `WM_DPICHANGED`, and on display changes. Nothing about
   taskbar geometry is stable for the life of the process.
 
@@ -249,13 +251,17 @@ thread for the UI Automation sweep (`taskbar_buttons.rs`). Each handle is kept a
 on `WM_DESTROY`; the shell coming back rebuilds them, which is the cost the original C++ paid
 too.
 
-### The helper is not one file, despite PublishSingleFile
+### Stage the helper from `publish`, never from the build output beside it
 
-`dotnet publish` leaves `barometer-sensors.exe` beside `MonoPosixHelper.dll` and
-`libMonoPosixHelper.dll`. Those are native and cannot be bundled, so they are not optional:
-copy the exe alone and it exits immediately, and the only symptom on this side is
-`greeting: EOF while parsing a value at line 1 column 0`. Ship the whole `publish` folder,
-and take it from `publish`, never from the build output beside it.
+`dotnet publish` used to leave `barometer-sensors.exe` beside `MonoPosixHelper.dll` and
+`libMonoPosixHelper.dll` - native, unbundlable, and not optional: copy the exe alone and it
+exits immediately, with `greeting: EOF while parsing a value at line 1 column 0` as the only
+symptom on this side. Since the LibreHardwareMonitor reference became
+`ExcludeAssets="runtime"` those two are no longer in `publish` at all, only in the build
+output next to it, and `publish` really is one file. The rule is unchanged and is the reason
+that difference is invisible: **ship the whole `publish` folder** - `build.ps1` stages the
+exe and either native library that is there, and `barometer.iss` packages the same three -
+and never stage from the build output, whose exe is not self-contained.
 
 ## Sensors: orchestrate LibreHardwareMonitor, do not ship it
 
@@ -271,6 +277,13 @@ of what LHM *is*. It is not shipped with Barometer, so there is no MPL redistrib
 obligation and no 70 MB of .NET in the installer — only integration and credit.
 
 ### The integration surface
+
+**Superseded, and kept for the record.** Nothing talks to LHM over HTTP today: `helper/`
+loads `LibreHardwareMonitorLib` in process and answers one line at a time, and
+`lhm_install.rs` fetches the library itself rather than driving somebody's running copy.
+`barometer-core/src/sensors/lhm.rs` still implements the client below and is wired to
+nothing; it is what a second source would be built from. The decision one heading up - read
+it, never ship it - is unchanged.
 
 LHM's remote interface is its HTTP server (`Utilities/HttpServer.cs`):
 
@@ -289,6 +302,11 @@ The `root\LibreHardwareMonitor` WMI namespace in LHM's `TestScripts/basicwmi.py`
 stale OpenHardwareMonitor leftover. There is no WMI provider in the tree. Do not build on it.
 
 ### What orchestration means here
+
+**Superseded with the section above.** What shipped is narrower and quieter: the Sensors
+pane offers to download the pinned release into `%LOCALAPPDATA%`, the helper loads the
+library from there or from wherever the user says, and no other program is started,
+configured or written to. The list below is the plan it replaced.
 
 1. **Detect** an installed LHM. It is frequently run portable from a zip, so registry
    detection alone is not enough: fall back to common paths and to a user-chosen path.
@@ -357,6 +375,12 @@ once by people who want temperatures. One line out, one line back - the parent w
 and gets one JSON object - so nothing samples hardware unless a reading was asked for, and
 the helper is idle the rest of the time.
 
+**Fetching it is not built.** Today `build.ps1` stages `barometer-sensors.exe` and the
+installer packages it beside `barometer.exe`, which is where `main.rs::helper_path` looks for
+it; nothing anywhere downloads the helper. What *is* fetched on demand is
+LibreHardwareMonitor itself (`lhm_install.rs`), which is the part that must never be shipped.
+Whoever revisits the installer's size should decide which of the two this paragraph meant.
+
 It is confined to a job object with `KILL_ON_JOB_CLOSE`. A Barometer that crashes must not
 leave a .NET process holding a driver handle, because the user will never find it.
 
@@ -400,9 +424,8 @@ is thirty lines and is easier to write again than to keep current.
 
 The fourteen marks are ported from `WeatherBadgeRenderer.swift` and drawn in code. **Not SF
 Symbols, and not an icon font**: there is no icon and no container. The temperature is drawn
-as plain text at full size and the condition lives in the bands above and below it that a
-two-row column would spend on a label, so the weather costs the strip a number's width and
-no more.
+as plain text at full size and the condition mark is drawn beside it, so the weather costs
+the strip a number's width plus the mark's and no more.
 
 The set has to differ in **shape**, never only in color, and there is a test that holds it
 to that. A user on a monochrome strip, or a taskbar tinted an unhelpful accent color, still
@@ -489,5 +512,5 @@ Taken from Yamato and Clicker, which are the same author's Rust on Windows:
 ```sh
 cargo build
 cargo test
-cargo run -- 6     # six samples against real hardware, then exit
+cargo run -- 6 --console   # six samples against real hardware, printed, then exit
 ```

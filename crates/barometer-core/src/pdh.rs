@@ -10,7 +10,7 @@
 // of PDH needed for that and hands back plain Rust values.
 //
 // Counters are always added with the *English* call. Counter paths are
-// localised on a localised Windows - "\Processor" is "\Prozessor" on a German
+// localized on a localized Windows - "\Processor" is "\Prozessor" on a German
 // install - and a query built from an English literal simply fails there. The
 // English variant translates for us, and it is the difference between working
 // everywhere and working in one language.

@@ -186,18 +186,6 @@ pub trait SensorProvider: Send {
     fn read(&mut self) -> Result<Vec<Sensor>, SensorError>;
 }
 
-/// The hottest processor temperature, which is what the strip shows.
-///
-/// Matched on the id rather than the display name. LibreHardwareMonitor builds
-/// ids from its own hardware type - `/amdcpu/0/temperature/2`,
-/// `/intelcpu/0/temperature/0` - which is stable across locales and across
-/// every marketing name a chip has ever been sold under. A name match would
-/// have to guess at "CPU Package", "Core (Tctl/Tdie)", "Package id 0" and
-/// whatever the next generation calls it.
-///
-/// Falls back to the hottest sensor anywhere, because a machine that reports
-/// no processor temperature at all still reports something worth showing, and
-/// a blank readout looks like the module is broken.
 /// One reading of one kind belonging to a graphics adapter.
 ///
 /// Windows publishes no clock, power or temperature for a GPU - only the
@@ -248,6 +236,18 @@ pub const GPU_CLOCK: [&str; 1] = ["core"];
 pub const GPU_POWER: [&str; 3] = ["package", "gpu power", "board"];
 pub const GPU_TEMPERATURE: [&str; 1] = ["core"];
 
+/// The hottest processor temperature, which is what the strip shows.
+///
+/// Matched on the id rather than the display name. LibreHardwareMonitor builds
+/// ids from its own hardware type - `/amdcpu/0/temperature/2`,
+/// `/intelcpu/0/temperature/0` - which is stable across locales and across
+/// every marketing name a chip has ever been sold under. A name match would
+/// have to guess at "CPU Package", "Core (Tctl/Tdie)", "Package id 0" and
+/// whatever the next generation calls it.
+///
+/// Falls back to the hottest sensor anywhere, because a machine that reports
+/// no processor temperature at all still reports something worth showing, and
+/// a blank readout looks like the module is broken.
 pub fn hottest_cpu(sensors: &[Sensor]) -> Option<&Sensor> {
     let from_cpu = sensors
         .iter()
@@ -269,10 +269,11 @@ fn is_processor(id: &str) -> bool {
     device.ends_with("cpu")
 }
 
-/// The hottest temperature anywhere, which is what the compact readout shows.
+/// The hottest temperature anywhere, which is what the panel shows.
 ///
 /// The macOS app shows the hottest processor die sensor in the menu bar and
-/// the hottest sensor anywhere in the panel; this is the panel's figure.
+/// the hottest sensor anywhere in the panel; this is the panel's figure, and
+/// `hottest_cpu` is the strip's.
 pub fn hottest(sensors: &[Sensor]) -> Option<&Sensor> {
     sensors
         .iter()

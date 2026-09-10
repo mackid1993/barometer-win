@@ -5,6 +5,13 @@ Sibling: the macOS app's `docs/DESIGN.md` and `Sources/MenuBarStatsUI/Design/Bar
 `mackid1993/Barometer`. This document is the Windows counterpart. Where it departs from the macOS app, the
 reason is in section 13; where it departs from the original brief, section 14.
 
+**This was written before the app existed.** Where the shipped app went another way, the section says so
+in a line rather than being deleted - the reasoning is worth keeping even where the outcome changed. Two
+divergences run through the whole document and are not repeated at every mention: everything is drawn with
+**GDI, with GDI+ where a two or three pixel feature has to be antialiased**, not Direct2D/DirectWrite; and
+the settings window's navigation is the list in section 13, a page per module, not the five panes drawn
+here. The tokens, metrics, states and rules below are otherwise what the code implements.
+
 Every dimension in this document is in DIPs (device-independent pixels, 96 per inch). Multiply by the
 monitor's scale factor (`GetDpiForWindow / 96`) and round to whole physical pixels at draw time. Nothing is
 specified in physical pixels except where the taskbar forces it (section 9.2).
@@ -174,10 +181,10 @@ roles through instead.
 | Disks | `#14B8A6` | `#4ADE80` | `brand.ground` (6.7) | white would be 2.5 |
 | Network | `#0EA5E9` | `#34D399` | `brand.ground` (6.0) | white 2.8 |
 | Sensors | `#F97316` | `#EF4444` | `brand.ground` (6.0) | white 2.8 |
-| Battery | `#22C55E` | `#A3E635` | `brand.ground` (7.3) | white 2.3 |
+| ~~Battery~~ | `#22C55E` | `#A3E635` | `brand.ground` (7.3) | **dropped** - Windows shows its own battery |
 | Weather | `#38BDF8` | `#FBBF24` | `brand.ground` (7.8) | white 2.1 |
-| Time | `#8B5CF6` | `#38BDF8` | white (4.2) | |
-| Combined | `#2F7CF6` | `#6BA4FF` | white (3.9) | |
+| ~~Time~~ | `#8B5CF6` | `#38BDF8` | white (4.2) | **dropped** - Windows shows its own clock |
+| Stacks (was Combined) | `#2F7CF6` | `#6BA4FF` | white (3.9) | |
 
 Tiles are flat (primary color only, 4 radius). The macOS app uses a two-color gradient; the Windows brand
 rule is "two colors on dark, no gradients", and a flat tile with a correctly chosen glyph ink is also the
@@ -185,6 +192,11 @@ only version that passes 3:1 for every module. None of these colors is used as t
 (they range 2.1–4.4:1 there).
 
 ### 2.6 Themes (the strip and flyout graphs)
+
+**Not built.** The strip draws in the taskbar's own ink and the flyouts in the module signature colors of
+2.5; there is no theme control in Appearance and no backplate. `AppearancePreset` in
+`barometer-core/src/settings.rs` carries these five names and nothing reads it yet. The palettes below are
+the specification for the day it does, and the contrast work under them is the part worth keeping.
 
 The five presets and their ten roles are the macOS values, verbatim, so a user with both apps sees one
 palette. Each role has a *light* value (for a light taskbar) and a *dark* value (for a dark taskbar or the
@@ -228,6 +240,10 @@ Custom colors: the swatch editor shows the live ratio against the current taskba
 anything under 4.5:1 with a caption ("3.1:1 on the current taskbar: hard to read"). It does not block.
 
 ### 2.7 The strip's ink and backplate
+
+The ink is built and follows `SystemUsesLightTheme` - the taskbar's switch, not `AppsUseLightTheme`,
+because the readout lives on the taskbar. **The backplate is not built**: nothing draws a plate behind the
+strip, so `strip.plate` and the Backplate setting below belong with 2.6.
 
 | Token | Dark taskbar | Light taskbar | Accent-tinted taskbar |
 | --- | --- | --- | --- |
@@ -275,7 +291,7 @@ systems without it (Windows 10): Segoe UI at the same sizes; the Medium weight f
 | Body Strong | 14 / 20 | Semibold 600 | Text | Section headers, inspector item name, dialog titles |
 | Subtitle | 20 / 28 | Semibold 600 | Segoe UI Variable Display | Pane titles |
 | Title | 28 / 36 | Semibold 600 | Display, `tnum` | Flyout hero value ("24 %") only |
-| Strip | 9–12 / see 9.3 | Medium 500 (user: Regular / Medium / Semibold) | Text, `tnum` | The taskbar readout |
+| Strip | 9 / see 9.3 | user's, per family, headings and values chosen separately | Text, `tnum` | The taskbar readout |
 | Mono | 13 / 18 | Regular | Cascadia Mono, fallback Consolas | Addresses, sensor identifiers in flyouts |
 
 Rules:
@@ -286,7 +302,7 @@ Rules:
 - No all-caps except the strip's module labels (`CPU`, `MEM`, `NET`), which follow the macOS app.
 - Text scaling: the app honors Windows' Accessibility text size (`SPI_GETLOGICALDPIOVERRIDE` is not it; read
   `UISettings.TextScaleFactor`) for the settings window and flyouts, up to 225 %. It does not apply it to
-  the strip, which has its own size control; the taskbar's height is fixed and the strip must fit it.
+  the strip, which draws at the one size in 9.4; the strip has to fit the bar it is given.
 - Antialiasing: ClearType in the settings window (opaque surfaces); grayscale
   (`DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE`) on the strip and in flyouts, because both sit on translucent
   composition where ClearType fringes.
@@ -518,26 +534,30 @@ arrives, which is the only "animation" in the product, and it stops the instant 
 
 ### 9.1 What it is
 
-One child window of the taskbar's notification area, `taskbar height` tall (48 at 100 %), as wide as the
-tray space reserved for it (section 9.2), drawn with Direct2D over a transparent ground so the taskbar's
-own material shows through. It holds every enabled item in order, laid out left to right. It is Barometer's
+One layered `WS_POPUP` **owned by** the taskbar - never a `WS_CHILD` of it, which the shell's own XAML
+surface composites away; see AGENTS.md - `taskbar height` tall (48 at 100 %), as wide as the tray space
+reserved for it (section 9.2), drawn with `UpdateLayeredWindow` over a per-pixel-alpha ground so the
+taskbar's own material shows through. It holds every enabled item in order, laid out left to right. It is Barometer's
 single point of presence on Windows; there is no separate tray icon.
 
 ### 9.2 Width, slots and slack
 
-The tray reservation (see the Taskbar pane) is quantized to tray-icon slots: 42 px at 100 % on Windows 11,
-measured at runtime through UI Automation rather than assumed (the pitch changes with DPI and OS builds).
-The strip's content width is the sum of item widths and gaps; the reserved width is
-`ceil(content / slot) × slot`. The difference, **slack**, is 0 to one slot minus 1 px.
+The reservation is not asked for, it is taken, by planting transparent placeholder icons in the
+notification area (AGENTS.md, "How the strip gets space of its own"), so it is quantized to tray-icon
+slots: 42 px at 100 % on Windows 11 as a seed, and then measured from where the placeholders actually
+landed with `Shell_NotifyIconGetRect`, because the pitch changes with DPI and OS builds. The strip's
+content width is the sum of item widths and gaps; the reserved width is `ceil(content / slot) × slot`.
+The difference, **slack**, is 0 to one slot minus 1 px.
 
-Slack is *distributed into the strip*, never left as a hole beside it: half goes to the outer padding
-(split left and right), half is spread evenly into the inter-item gaps, capped at one extra gap-width per
-gap. This is the "stretch the window to the reserved region" idea from the TrafficMonitor investigation,
-and it is the only approach that removes visible gaps instead of moving them. The strip's window is
-always exactly the reserved width.
+Slack stays *inside the strip*, never left as a hole beside it: the content is centered in the reserved
+region, so the slack is split evenly between the two ends and reads as margin. Left-aligning would pile
+all of it against the right-hand end, against the tray, where it reads as a gap somebody forgot to close.
+There is no end-padding setting: asking a few pixels past a slot boundary buys a whole further slot of
+taskbar, and the margin is already there.
 
 Windows may still leave up to one task-button width of blank between the last task button and the tray;
-that is Explorer's quantization, is not ours, and the Taskbar pane says so in one sentence.
+that is Explorer's quantization and not ours. There is no pane to say so in: the Taskbar pane that was
+to carry that sentence was never built (`ui-layouts.md` §5).
 
 ### 9.3 Band, rows, baselines
 
@@ -559,18 +579,23 @@ y=48  └───────────────────────�
   at `y = 28.5`, snapped to a pixel.
 - Graphs occupy the full 32 band; bars (per-core) the same; a usage bar is 6 tall centered on row 2 with
   its label on row 1.
-- Line boxes shrink with the font (16 at 12 pt → 12 at 9 pt); the band stays 32, so small text floats
-  toward the center rather than toward the edges.
+- The font is one size (9.4), so the line box is one size too; the band stays 32 whatever the bar's
+  height, and the two rows float toward the center rather than toward the edges. A bar too short for two
+  legible rows drops to one rather than shrinking them (`Density::choose`).
 
 ### 9.4 Type in the strip
 
-Segoe UI Variable Text, Medium 500 (user-selectable Regular / Medium / Semibold), tabular figures, grayscale
-antialiasing, color from 2.7 or the theme.
+The user's family and weight (Appearance), tabular figures, grayscale antialiasing, color from 2.7 or the
+theme. Headings and values are chosen separately, and only the weights the chosen family actually has faces
+for are offered - GDI never refuses a weight, it smears the nearest face, so offering five on a
+single-weight family was offering four lies.
 
-**Automatic size, verbatim from macOS**: 12 pt with up to 8 enabled items, 11 with 9–11, 10 with 12–14, 9
-with 15 or more. A Combined item counts as one. The user's "Text size" (9–12) is a *ceiling*, not an
-override: effective size = min(automatic, chosen). Graphics (icons, graph height allowances, bar widths)
-scale with the same steps: 1.15 at ≤ 3 items, 1.0 at 4–6, 0.9 at 7–8, 0.85 at 9–11, 0.8 at 12–14, 0.75 at 15+.
+**One size, 9 DIP** (`taskbar::TEXT_DIP`). macOS steps its type from 12 down to 9 as items are added; here
+the strip starts at the bottom of that ladder and stays there, because its width is paid for by the task
+buttons beside it and the shell gives those up a whole button at a time - a readout that grows whenever it
+has fewer items spends that room on nothing anyone asked for. There is no text size setting: a control that
+could only lower an automatic size confused more than it helped. Nothing else steps with the item count
+either; the marks and graphs are sized from the band and the text, not from a ladder.
 
 Labels (`CPU`, `MEM`, `NET`, sensor names) are drawn at 82 % alpha of the ink; values at 100 %. That single
 difference is what stops a strip of eight items from being a run-on sentence: the eye lands on values.
@@ -578,12 +603,12 @@ difference is what stops a strip of eight items from being a run-on sentence: th
 ### 9.5 Widths: fixed by design
 
 Each item reserves the width of its widest plausible reading and never changes width while its numbers
-change ("100 %", "999.9 KB/s", "-99.9°", "23:59:59"). Reserved strings are measured once per font size and
-DPI and cached. "Shrink items to fit the current reading" (off by default) opts a user into live widths; the
-default is fixed because a taskbar that breathes every second is the single most common complaint about
-this genre of app.
+change ("100 %", "999.9 KB/s", "-99.9°"). Reserved strings are measured on the window's own DC in the font
+that will draw them, and cached. There is no setting for this: a taskbar that breathes every second is the
+single most common complaint about this genre of app, and live widths were tried and reverted.
 
-Approximate widths at 12 pt (measure at runtime; these are for layout planning):
+Approximate widths, worked at 12 (measure at runtime; the strip draws at 9, and these are for layout
+planning only):
 
 | Item | Reserved string | Width (DIP) |
 | --- | --- | --- |
@@ -596,20 +621,24 @@ Approximate widths at 12 pt (measure at runtime; these are for layout planning):
 | Condition mark over temperature | max(16, `-99°`) | 30 |
 | History graph | user width 24–96 | default 40 |
 | Per-core bars | cores × 3 + (cores − 1) × 1 | 16 cores → 63 |
-| Battery glyph with percentage | glyph 26 | 26 |
-| Time | template-dependent, e.g. `23:59` | 34 |
+| ~~Battery glyph with percentage~~ | dropped with the module | — |
+| ~~Time~~ | dropped with the module | — |
 
 ### 9.6 Separation between items
 
-Three cooperating mechanisms, in order of strength:
+Two cooperating mechanisms, in order of strength:
 
-1. **Gap**: Normal 12 (default), Snug 8, Tight 4. Plus distributed slack (9.2).
+1. **Gap**: one slider, 0 to 24, **3 by default** (`DEFAULT_COLUMN_GAP_DIP`). There is no end-padding
+   setting; the margin comes from the slot slack (9.2). Compact from the first run and
+   deliberately so: every pixel spent between columns is a pixel that can tip another task button into the
+   overflow, and three is enough that two columns of digits still read as two numbers. Fourteen, the first
+   figure, was far too much. The named steps this section used to specify - Normal 12, Snug 8, Tight 4 -
+   were never built; the slider replaced them.
 2. **Shape contrast**: a stacked item next to a graph next to an icon + value already reads as three
    things. The default composition (CPU stacked, MEM stacked, NET two-line rates) is deliberately not three
    identical shapes.
-3. **Dividers** (off by default): 1 DIP, 20 tall (band minus 6 each side), `strip.divider`, centered in the
-   gap. Turn on for a strip of many same-shaped items. Inside a Combined item, members are separated by a
-   6 gap and a 1 DIP separator exactly as on macOS, regardless of the global divider setting.
+
+Dividers between items were specified here and are not built. At a 3 DIP gap they would have nowhere to go.
 
 ### 9.7 Interaction states on the strip
 
@@ -681,10 +710,11 @@ created once per theme. No timers run when nothing changes; hover does not start
 
 ## 11. Context menu (right-click on the strip)
 
-A standard Win32 popup menu (`TrackPopupMenuEx`, which is themed by the OS and needs no drawing):
-"Hide *CPU*" (the item under the pointer), separator, "Settings…", "Pause updates" (checkable),
-separator, "Quit Barometer". Shift+F10 on a focused item does the same. This is also where "Quit" lives;
-the settings window has no quit control, matching Windows conventions.
+A `TrackPopupMenuEx` popup, owner-drawn rather than left to the OS so it follows the taskbar's theme
+instead of the app one: "Settings...", "Check for updates", separator, "Exit Barometer". Three rows, not
+five - there is no "Hide *CPU*", because the item under the pointer is a column of a strip rather than a
+window of its own, and no "Pause updates", which nobody asked for. This is where quitting lives; the
+settings window has no quit control, matching Windows conventions.
 
 ## 12. Resource rules that shape the visuals
 
@@ -700,12 +730,12 @@ the settings window has no quit control, matching Windows conventions.
 | macOS | Windows | Why |
 | --- | --- | --- |
 | N independent menu bar items, ordered by Cmd-drag in the bar | One strip; order and visibility in the Strip composer | Windows has no multi-item tray API. |
-| One settings pane per module in the sidebar; General holds appearance, spacing, colors, units | Sidebar: Strip, Appearance, Taskbar, General, About; module options live in the composer's inspector | A single strip needs a composer; the macOS General pane has nine sections and the brief wants a ninety-second visit. |
+| One settings pane per module in the sidebar; General holds appearance, spacing, colors, units | Sidebar: Strip, then a page each for CPU, GPU, Memory, Disks, Network, Sensors and Weather, then Stacks, Appearance, General, About | The composer needed a pane of its own, and the module inspectors that lived inside it were reachable only by selecting a row, invisible to anybody who had switched that module off, and capped at a 240 DIP column - so the macOS shape won after all. |
 | "Apply Changes" staging bar for visibility changes | Everything applies live | The staging exists for macOS 27 status-item geometry; the strip is one window we own. |
 | Focus and Now Playing modules | Not in v1 | Outside the module set specified for the Windows app. |
-| Time: notifications list, calendar events, hide the system clock | Time: format, seconds, world clocks only; off by default | Windows exposes none of the three to a desktop app; Windows shows its own clock. |
-| Sensors read from IOHID/SMC directly | Sensors read from HWiNFO or LibreHardwareMonitor shared memory; "no source" is a first-class calm state | No Windows API exposes temperatures. |
-| Battery module always present | Battery hidden (strip and composer) when `GetSystemPowerStatus` reports no battery | Nothing to show on a desktop. |
+| Time module | **Dropped.** Windows draws its own clock on the same taskbar | A second clock spends strip width duplicating the shell. |
+| Sensors read from IOHID/SMC directly | Sensors read through a .NET helper that loads LibreHardwareMonitor's library from the user's own machine; "no source" is a first-class calm state | No Windows API exposes temperatures, and the library is never redistributed. |
+| Battery module always present | **Dropped.** Windows already shows battery in the tray, with time remaining | Battery *sensors* still arrive through Sensors. |
 | Theme light values used as-is on a light menu bar | Backplate by default on light/accent taskbars; darkened variants when the plate is off | The light values are 2.8–4.3:1 on a Windows light taskbar. |
 | Gradient icon tiles, 14 / 10 radii, glass cards | Flat tiles, 8 / 4 radii, acrylic panel with layer cards | Windows 11 idiom and the brand's "no gradients". |
 | Memory pressure | In use / committed | Windows' terms (Task Manager). |
@@ -720,13 +750,12 @@ the settings window has no quit control, matching Windows conventions.
 - **"One-line vs two-line layout."** Replaced by per-item readout styles (stacked items are two rows; the
   strip itself is always one row). A global two-line switch fights the module model and, on a 48 DIP taskbar,
   every item already gets two rows.
-- **"Font size"** is a ceiling on the automatic size, not a free choice, so a fifteen-item strip cannot be
-  made to overflow the taskbar.
-- **"Item spacing"** is three named steps, not a slider: the useful range is 4–12 and the slack rule (9.2)
-  already varies it.
-- **Weather and Sensors** are not top-level panes. They are inspectors of their items in the composer,
-  reachable in one click from the row that says "Needs a location" / "Needs a sensor source". The row's
-  caption is the deep link.
-- **Taskbar space** stays a top-level pane despite being one toggle, because it is the one setting that
-  changes how Windows behaves, and a confused user will look for it by name. It earns its space with the
-  before/after diagram.
+- **"Font size"** is gone. The strip draws at one size (§9.4).
+- **"Item spacing"** was to be three named steps rather than a slider. It ended up a slider after all, 0 to
+  24, because the useful range turned out to be at the bottom of that scale (default 3, §9.6) and named
+  steps could not say the difference between 2 and 4.
+- **Weather and Sensors** were to be inspectors in the composer rather than panes. Every module has a page
+  of its own now (§13), and the sensor source and the weather locations are sections on theirs.
+- **Taskbar space** was to be a top-level pane with a before/after diagram. There is no such pane: the
+  reservation is not a setting anybody chooses - without it there is no readout - so there was nothing to
+  put on the page but a picture.

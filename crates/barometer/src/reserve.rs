@@ -42,13 +42,12 @@ const REGION_CONFIRM: u32 = 2;
 /// change is the flash somebody sees every time they click the tray, and
 /// nothing has actually moved.
 ///
-/// So widening is believed at once and narrowing has to be confirmed. The
-/// asymmetry is the same one `Obstruction` uses and it is deliberate in the
-/// same way. Growth is always real - a placeholder that has appeared has
-/// appeared - and startup depends on it being taken immediately, since the
-/// region fills in one icon at a time and a delay there is a delay before the
-/// readout can be shown at all. Shrinkage is the only direction a transient can
-/// fake, so it is the only direction that waits.
+/// So any change to an established region has to be read twice before it is
+/// believed, and only a change of our own - a placeholder added or given back,
+/// which moves the held count - is taken at once. Startup depends on that
+/// exception, since the region fills in one icon at a time and a delay there
+/// is a delay before the readout can be shown at all. `observe` says why the
+/// rule is about the whole rectangle rather than its width.
 #[derive(Default, Debug)]
 struct Steady {
     region: Rect,
@@ -264,7 +263,7 @@ mod steady_tests {
     }
 
     #[test]
-    fn growth_is_taken_immediately() {
+    fn growing_because_we_added_slots_is_taken_immediately() {
         // Startup adds one placeholder per tick, so the region grows a slot at
         // a time. Confirming growth would delay the readout appearing at all.
         let mut steady = Steady::default();
@@ -297,7 +296,6 @@ mod steady_tests {
     }
 }
 
-/// A block of reserved tray space.
 /// How long the readout must want fewer tray slots before it gives one back.
 ///
 /// Only shrinking waits; growing is immediate. Every added or removed
@@ -307,6 +305,7 @@ mod steady_tests {
 /// any flicker and shorter than anybody's patience.
 const SETTLE: Duration = Duration::from_secs(4);
 
+/// A block of reserved tray space.
 pub struct Reservation {
     owner: HWND,
     icon: HICON,
@@ -574,19 +573,13 @@ impl Reservation {
     /// icon lags or stays hidden, and the readout then never moves onto the
     /// space that does exist. A partial region simply fits less.
     ///
-    /// **Widening is believed at once; narrowing has to be confirmed.** Clicking
-    /// anything in the tray - the overflow chevron, or an icon with a flyout of
-    /// its own - makes the shell re-lay the tray out, and for a frame in the
-    /// middle of that some of our placeholders report no rectangle at all. Taken
-    /// at face value that is a region a slot or two narrower, or none, so the
-    /// readout resizes or disappears and is back a tick later: the flash the
-    /// user sees every time they click the tray. Nothing actually moved.
-    ///
-    /// The asymmetry is the same one `Obstruction` uses and it is deliberate.
-    /// Growth is always real - a placeholder that has appeared has appeared -
-    /// and startup depends on it being taken immediately, since the region fills
-    /// in one icon at a time. Shrinkage is the only direction a transient can
-    /// fake, so it is the only direction that waits.
+    /// What is measured is handed to `Steady` rather than used directly, and
+    /// that is where the tray-click flash is held off: clicking anything in the
+    /// tray - the overflow chevron, or an icon with a flyout of its own - makes
+    /// the shell re-lay the tray out, and for a frame in the middle of that
+    /// some of our placeholders report no rectangle at all. Taken at face value
+    /// that is a region a slot or two narrower, or none, so the readout resizes
+    /// or disappears and is back a tick later. Nothing actually moved.
     fn measure(&mut self) {
         // Only rectangles that are actually in the taskbar, and this is the
         // whole of the tray-click flash.
@@ -597,17 +590,15 @@ impl Reservation {
         // window sitting above the taskbar. Every icon reports, so the
         // measurement is complete by any count, and the union of them spans
         // from the tray up into the popup. The region explodes, the span
-        // dwarfs the slots it holds, and `observe_span` reads that as an icon
-        // dragged in among the placeholders - so the readout hid itself, on
-        // open and again on close.
+        // dwarfs the slots it holds, and the span tell that used to decide
+        // obstruction read that as an icon dragged in among the placeholders -
+        // so the readout hid itself, on open and again on close.
         //
-        // TrafficMonitor never had this because it tests obstruction by
-        // intersecting with other programs' icon rectangles enumerated through
-        // UI Automation. Barometer trades that for a span comparison, which
-        // costs no COM and no background thread and is right about everything
-        // except a rectangle that is not in the taskbar at all. So those are
-        // dropped, which turns this into an incomplete measurement, and an
-        // incomplete measurement changes nothing.
+        // Obstruction goes to the UI Automation sweep now, as TrafficMonitor's
+        // does - see the block at the end of this function - so that particular
+        // misreading is gone. The rectangles are still dropped: one that is not
+        // in the taskbar at all says nothing about where the region is, and
+        // what is left is an incomplete measurement, which changes nothing.
         let bar = barometer_core::taskbar::taskbar().map(|bar| Rect {
             left: bar.rect.left,
             top: bar.rect.top,

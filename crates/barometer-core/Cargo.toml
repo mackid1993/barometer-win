@@ -17,10 +17,12 @@ rust-version.workspace = true
 serde_json = "1"
 
 windows-sys = { workspace = true, features = [
+    # HANDLE, CloseHandle, GetLastError, LUID and the rest of the types every
+    # other feature here is declared in terms of.
     "Win32_Foundation",
-    # GetSystemTimes and GlobalMemoryStatusEx. Processor time and physical
-    # memory both come from plain syscalls, with no performance counter and no
-    # driver in the way.
+    # GlobalMemoryStatusEx for physical memory, GetLogicalProcessorInformationEx
+    # for the core classes and GetTickCount64 for uptime - all plain syscalls,
+    # with no performance counter and no driver in the way.
     "Win32_System_SystemInformation",
     # GetSystemTimes is filed under Threading rather than SystemInformation,
     # which is where you would look for it and where it is not. Also
@@ -52,21 +54,22 @@ windows-sys = { workspace = true, features = [
     # to and how tall it is. Both are load-bearing: side edges are refused, and
     # the strip sizes itself to the height it finds.
     "Win32_UI_Shell",
-    # Job objects, so the sensor helper cannot outlive us. A child still
-    # running after its parent crashed is a process leak the user has to find
-    # in Task Manager, and they will not.
     # PDH, for GPU and disk counters. Windows publishes GPU utilization and
     # per-disk throughput only through performance counters; there is no plain
     # API for either.
     "Win32_System_Performance",
+    # CreateJobObjectW, so the sensor helper cannot outlive us. A child still
+    # running after its parent crashed is a process leak the user has to find
+    # in Task Manager, and they will not.
     "Win32_System_JobObjects",
     # CreateJobObjectW takes SECURITY_ATTRIBUTES, so its declaration is gated
     # behind this even though we pass null for it.
     "Win32_Security",
+    # The namespace the two below are declared inside.
+    "Win32_Networking",
     # WinHTTP, for the one HTTPS request Barometer makes. Open-Meteo is HTTPS
     # only, and the alternative is a TLS stack and an async runtime in the
     # binary for a request made four times an hour. See net.rs.
-    "Win32_Networking",
     "Win32_Networking_WinHttp",
     # GetAdaptersAddresses returns socket addresses, and the TCP tables that
     # per-process traffic is summed from are keyed by them.
@@ -77,5 +80,6 @@ windows-sys = { workspace = true, features = [
     "Win32_Storage_FileSystem",
     # The storage property query, for what a physical disk is called.
     "Win32_System_Ioctl",
+    # DeviceIoControl, which is what sends that query - see sys/storage.rs.
     "Win32_System_IO",
 ] }

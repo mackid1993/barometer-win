@@ -137,6 +137,7 @@ impl InterfaceAppearance {
 /// because Windows taskbars are more varied in background than a Mac menu bar
 /// - translucent over an arbitrary wallpaper, tinted with an accent color -
 /// and there are backgrounds where semibold is still not enough separation.
+/// Light is the addition at the other end, and its reason is on the variant.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum FontWeight {
     /// Segoe UI has a real Light face, and at the sizes a taskbar uses it is
@@ -358,14 +359,6 @@ pub struct StripFont {
     /// Only the label row uses it, so a network column showing two rates has
     /// both of them in `weight` - neither is a heading.
     pub heading_weight: FontWeight,
-    /// Ceiling on the automatic size, in DIPs.
-    ///
-    /// Not an override. The strip already picks a size from the number of
-    /// widgets and the height of the taskbar, and a fixed size fights both:
-    /// it overflows a small taskbar and wastes a tall one. This says "never
-    /// larger than this", which is what people actually want when they reach
-    /// for the setting.
-    pub max_size_dip: f32,
 }
 
 impl Default for StripFont {
@@ -377,7 +370,6 @@ impl Default for StripFont {
             heading_family: None,
             weight: FontWeight::Regular,
             heading_weight: FontWeight::Semibold,
-            max_size_dip: 12.0,
         }
     }
 }
@@ -385,36 +377,11 @@ impl Default for StripFont {
 impl StripFont {
     /// The face to fall back to when the chosen family is not installed.
     pub const FALLBACK_FAMILY: &'static str = "Segoe UI";
-
-    /// Applies the ceiling to a size the density ladder chose.
-    pub fn clamp(&self, automatic_dip: f32) -> f32 {
-        automatic_dip.min(self.max_size_dip.max(Self::MIN_SIZE_DIP))
-    }
-
-    /// Below this, tabular digits stop being legible on a taskbar at 100%.
-    pub const MIN_SIZE_DIP: f32 = 7.0;
-    /// Above this the readout no longer fits a default-height taskbar in two rows.
-    pub const MAX_SIZE_DIP: f32 = 18.0;
 }
 
 #[cfg(test)]
 mod font_tests {
     use super::*;
-
-    #[test]
-    fn the_size_setting_is_a_ceiling_not_an_override() {
-        let font = StripFont { max_size_dip: 10.0, ..Default::default() };
-        // A crowded strip that already chose 9 is left alone.
-        assert_eq!(font.clamp(9.0), 9.0);
-        // A roomy strip that wanted 12 is held to the ceiling.
-        assert_eq!(font.clamp(12.0), 10.0);
-    }
-
-    #[test]
-    fn an_absurd_ceiling_cannot_make_text_illegible() {
-        let font = StripFont { max_size_dip: 1.0, ..Default::default() };
-        assert_eq!(font.clamp(12.0), StripFont::MIN_SIZE_DIP);
-    }
 
     #[test]
     fn weights_round_trip_and_map_to_dwrite() {

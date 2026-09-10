@@ -104,6 +104,45 @@ impl TemperatureUnit {
     }
 }
 
+/// The widest *air* temperature the strip can be asked to draw, per unit.
+///
+/// This is a width, not a forecast. `whole` gives at most three characters for
+/// any reading Open-Meteo returns for a place with people in it - -68 to 57 C
+/// at Oymyakon and Furnace Creek, -90 to 134 F for the same pair - and the
+/// widest three of them is what a column has to hold.
+///
+/// **Which** three cannot be read off the numbers, and this is the whole
+/// reason there are two candidates here rather than one string. Segoe UI's
+/// figures are tabular, so "134" and "100" measure the same and both beat
+/// "-44" by the difference between a digit and a minus. Segoe UI Semibold's
+/// are not: measured on the strip's own DC at 150%, `1` is six pixels, `4` is
+/// nine and the rest eight, so there "-44" is the widest reading there is and
+/// "100" is two pixels short of it. One literal is exact in one face and
+/// short in the other, and short is what makes the column grow the first time
+/// the weather turns - the sideways shuffle a reserved width exists to stop.
+///
+/// So the reservation is the pair, and the renderer measures both. Both are
+/// readings the formatter genuinely produces: -44 is an ordinary Arctic
+/// winter morning in either unit and 100 an ordinary Texan afternoon.
+/// Measured exact - not merely sufficient - in both faces above; a family
+/// whose widest digit is some third thing could still be a pixel short, which
+/// is what the sweep in `window.rs` is there to catch.
+///
+/// Separate from `widest`, which is about hardware and reaches three digits
+/// in Celsius where the weather never does.
+pub fn reserved_air_temperature(unit: TemperatureUnit) -> String {
+    let symbol = unit.symbol();
+    match unit {
+        // Celsius never reaches three digits - the highest air temperature
+        // ever recorded is 56.7 - so its widest shape is a minus and two
+        // digits and there is nothing to choose between.
+        TemperatureUnit::Celsius => format!("-44{symbol}"),
+        TemperatureUnit::Fahrenheit => {
+            format!("100{symbol}{}-44{symbol}", crate::module::RESERVED_SEPARATOR)
+        }
+    }
+}
+
 /// Wind-speed units supported by Open-Meteo.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum WindSpeedUnit {
@@ -338,6 +377,55 @@ mod temperature_tests {
         assert_eq!(TemperatureUnit::Fahrenheit.describe(61.0), "142\u{00B0}F");
         assert_eq!(TemperatureUnit::Fahrenheit.describe(0.0), "32\u{00B0}F");
         assert_eq!(TemperatureUnit::Fahrenheit.describe(100.0), "212\u{00B0}F");
+    }
+
+    #[test]
+    fn no_air_temperature_anybody_lives_in_is_wider_than_the_width_reserved_for_one() {
+        // Every reading Open-Meteo can return for an inhabited place, against
+        // the string the weather column holds room for. The bounds are the
+        // records: 56.7 C / 134 F at Furnace Creek, and -68 C / -90 F at
+        // Oymyakon, which is the coldest permanently inhabited place there is.
+        // Every candidate has to be a string the formatter could produce, or
+        // the column is reserving room for a reading that cannot happen.
+        let reserved = |unit: TemperatureUnit| {
+            reserved_air_temperature(unit)
+                .split(crate::module::RESERVED_SEPARATOR)
+                .map(|candidate| candidate.chars().count())
+                .max()
+                .expect("a reservation has at least one candidate")
+        };
+        for tenths in -680..=567 {
+            let celsius = f64::from(tenths) / 10.0;
+            let text = format!("{}{}", crate::format::whole(celsius), TemperatureUnit::Celsius.symbol());
+            assert!(
+                text.chars().count() <= reserved(TemperatureUnit::Celsius),
+                "{text} against {}",
+                reserved_air_temperature(TemperatureUnit::Celsius)
+            );
+        }
+        for tenths in -900..=1340 {
+            let fahrenheit = f64::from(tenths) / 10.0;
+            let text =
+                format!("{}{}", crate::format::whole(fahrenheit), TemperatureUnit::Fahrenheit.symbol());
+            assert!(
+                text.chars().count() <= reserved(TemperatureUnit::Fahrenheit),
+                "{text} against {}",
+                reserved_air_temperature(TemperatureUnit::Fahrenheit)
+            );
+        }
+        // Three characters and not a fourth: covering Fahrenheit below -99
+        // would cost every strip that shows the weather a whole character
+        // forever, for the interior of Antarctica.
+        assert_eq!(reserved(TemperatureUnit::Fahrenheit), "100\u{00B0}F".chars().count());
+        assert_eq!(reserved(TemperatureUnit::Celsius), "-99\u{00B0}C".chars().count());
+        // Which three characters is a pixel question, not a character one -
+        // see the note on `reserved_air_temperature` and the measured test in
+        // `window.rs`, which is what proves these are the widest.
+        assert_eq!(reserved_air_temperature(TemperatureUnit::Celsius), "-44\u{00B0}C");
+        assert_eq!(
+            reserved_air_temperature(TemperatureUnit::Fahrenheit),
+            "100\u{00B0}F\n-44\u{00B0}F"
+        );
     }
 
     #[test]

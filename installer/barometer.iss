@@ -40,7 +40,10 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-AppSupportURL=https://github.com/mackid1993/Barometer
+; This app's own repository. mackid1993/Barometer is the macOS program, which
+; shares the name and nothing else; sending a Windows user there for support is
+; sending them to somebody else's issue tracker.
+AppSupportURL=https://github.com/mackid1993/barometer-win
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -49,6 +52,10 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 
+; Admin on purpose. The sensor helper reads temperatures through a kernel
+; driver, and Barometer runs elevated so that it can start the helper. The
+; per-user-area warning Inno prints about the desktop shortcut and the
+; logon task is known and accepted.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -118,6 +125,13 @@ Source: "{#StageDir}\barometer.ico";  DestDir: "{app}"; Flags: ignoreversion
 ; runs the helper build still gets a working install, with the Sensors module
 ; reading unavailable and the settings pane explaining what to install.
 Source: "{#StageDir}\barometer-sensors.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; The two native libraries a single-file publish cannot bundle, when a publish
+; produces them. They are absent while LibreHardwareMonitor is referenced with
+; ExcludeAssets="runtime", which is why this is skipifsourcedoesntexist and not
+; a hard requirement - but a build that does stage them must package them, or
+; the helper starts and exits with nothing to say why. See AGENTS.md.
+Source: "{#StageDir}\MonoPosixHelper.dll";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#StageDir}\libMonoPosixHelper.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 ; IconFilename is given explicitly rather than left to inherit from the

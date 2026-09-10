@@ -349,7 +349,6 @@ pub enum Kind {
     Plate,
     /// A row's background: washed when chosen or under the pointer.
     Row { selected: bool },
-    /// A module tile: a flat square of the module's color with a glyph.
     /// A module's mark on a colored rounded square, from the Swift's
     /// `IconTile`: the accent's two colors as a diagonal gradient, a gloss
     /// down the face, a hairline edge, and the glyph in whichever of white

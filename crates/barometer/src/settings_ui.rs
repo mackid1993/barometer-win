@@ -33,6 +33,7 @@ pub mod panes;
 pub mod preview;
 pub mod system;
 pub mod theme;
+pub mod transfer;
 pub mod ui;
 
 pub use model::{GpuAdapter, GpuChoice, Model, SensorSource, Snapshot, StripItem};
@@ -445,11 +446,13 @@ struct WindowState {
     preview_spans: Vec<(StripItem, f32, f32)>,
     preview_hover: Option<StripItem>,
     version: String,
-    /// Whether Barometer is in the per-user Run key, read when the window
-    /// opens and after every change - never kept in the settings file, since
-    /// the user can take it out from Task Manager and a stale copy would then
-    /// draw a switch that lies.
+    /// Whether Barometer's logon task is registered and enabled, read when the
+    /// window opens and after every change - never kept in the settings file,
+    /// since the user can disable it in Task Scheduler and a stale copy would
+    /// then draw a switch that lies.
     starts_at_login: bool,
+    /// What the last settings import or export said, under its buttons.
+    transfer: Option<String>,
 }
 
 /// The pane the app asked for, if it asked, consuming the request.
@@ -510,6 +513,7 @@ impl WindowState {
             preview_hover: None,
             version: update::Version::running().to_string(),
             starts_at_login: crate::startup::is_on(),
+            transfer: None,
         }
     }
 
@@ -605,6 +609,7 @@ impl WindowState {
             preview_light: self.preview_light,
             version: &self.version,
             starts_at_login: self.starts_at_login,
+            transfer: self.transfer.as_deref(),
         }
     }
 
@@ -657,6 +662,7 @@ impl WindowState {
                 preview_light: self.preview_light,
                 version: &self.version,
                 starts_at_login: self.starts_at_login,
+                transfer: self.transfer.as_deref(),
             };
             let nav = panes::nav(height, self.pane, &measure);
             let (content, content_h) = panes::content(self.pane, &view, width - NAV_W, &measure);
@@ -1099,7 +1105,7 @@ impl WindowState {
     /// `uninstall` asks the sensor helper to let go and waits up to three
     /// seconds for it before three passes of deleting a directory tree. Run
     /// from the window procedure, that is three seconds of a settings window
-    /// Windows has greyed out and labeled "Not Responding" - the one call in
+    /// Windows has grayed out and labeled "Not Responding" - the one call in
     /// this pane that had been left on the message thread.
     fn remove_library(&mut self) {
         if matches!(self.lhm, LhmState::Installing(_) | LhmState::Removing) {
@@ -1315,7 +1321,7 @@ impl WindowState {
         }
         self.pressed = target;
         match target {
-            Some(id @ (Id::Size | Id::Gap | Id::Padding | Id::PollSeconds | Id::RefreshMinutes)) => {
+            Some(id @ (Id::Gap | Id::PollSeconds | Id::RefreshMinutes)) => {
                 self.slider_drag = Some(id);
                 // SAFETY: a live window.
                 unsafe { SetCapture(self.hwnd) };
@@ -1602,6 +1608,25 @@ impl WindowState {
                 self.commit();
             }
             Id::CheckNow => self.start_update_check(),
+            Id::ExportSettings => {
+                self.transfer = transfer::export(self.hwnd, &self.model.to_settings());
+                self.relayout();
+            }
+            Id::ImportSettings => match transfer::import(self.hwnd) {
+                Some(Ok(settings)) => {
+                    // Replaced whole, then committed like any other change,
+                    // so the strip follows and the app's own file is written
+                    // from it - which is what makes the import stick.
+                    self.model = model::Model::from_settings(settings);
+                    self.transfer = Some("Imported. The strip is showing what the file said.".to_string());
+                    self.commit();
+                }
+                Some(Err(why)) => {
+                    self.transfer = Some(why);
+                    self.relayout();
+                }
+                None => {}
+            },
             Id::StartAtLogin => {
                 // Asked, then read back: a machine that refuses the write -
                 // policy, a locked-down profile - leaves the switch showing
@@ -1618,7 +1643,7 @@ impl WindowState {
                 self.preview_light = !self.preview_light;
                 self.invalidate();
             }
-            Id::Size | Id::Gap | Id::Padding | Id::PollSeconds | Id::RefreshMinutes => {}
+            Id::Gap | Id::PollSeconds | Id::RefreshMinutes => {}
         }
     }
 

@@ -57,9 +57,9 @@ pub use processes::CoreKind;
 pub(super) mod icons {
     /// CommandPrompt, standing where the Mac draws the application's icon.
     /// The Mac's own fallback for a process with no application behind it
-    /// is terminal.fill, so a prompt is the honest mark for every process
-    /// until Windows is asked for icons, which needs the executable's path
-    /// and a shell call per row.
+    /// is terminal.fill, so a prompt is the honest mark for a process the
+    /// shell has no icon for - which is all this stands in for now that
+    /// `appicon` fetches the real ones.
     pub const PROCESS: &str = "\u{E756}";
     /// Copy, from the table in docs/ui-design.md section 6.
     pub const COPY: &str = "\u{E8C8}";
@@ -758,11 +758,10 @@ const PROCESS_MARK_GAP: f32 = 8.0;
 /// The mark at a process row's left, where the Mac draws the application's
 /// icon, and where the name then starts.
 ///
-/// A neutral glyph rather than the executable's icon: the icon wants the
-/// path, which the process list does not carry, and a shell call per row
-/// per sample for a picture the vocabulary has no element to hold. The
-/// slot is kept so the rows keep the Mac's anatomy, and so that nothing
-/// else moves the day icons arrive.
+/// The executable's own icon where the shell has one - `appicon` does that
+/// lookup off this thread, because it wants the path the process list does
+/// not carry and a shell call per row - and a neutral glyph in its place
+/// where it does not, so the row keeps the Mac's anatomy either way.
 pub(super) fn process_mark(b: &mut Builder<'_>, row: Rect, icon: Option<isize>) -> f32 {
     let x = row.x + 6.0;
     let cell = Rect::new(x, row.y + (row.h - PROCESS_MARK) / 2.0, PROCESS_MARK, PROCESS_MARK);
@@ -939,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn a_process_row_carries_the_neutral_mark_where_the_mac_draws_an_icon() {
+    fn a_process_the_shell_has_no_icon_for_falls_back_to_the_neutral_mark() {
         let elements = layout(&CpuFlyout::new(full()));
         let marks: Vec<&Element> = elements
             .iter()

@@ -95,8 +95,6 @@ impl Default for GpuSnapshot {
 }
 
 impl GpuSnapshot {
-    /// The engines with the busiest first, which is the order the eye
-    /// looks for and the order the headline was chosen in.
     /// Takes the adapter's clock, power and temperature from the sensor
     /// source's readings.
     ///

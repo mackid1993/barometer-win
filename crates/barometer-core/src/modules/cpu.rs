@@ -88,7 +88,7 @@ impl CpuModule {
         }
     }
 
-    /// The load averages, once there has been more than one sample.
+    /// The load averages, from the first sample on - see `sample_load`.
     pub fn load_average(&self) -> Option<LoadAverage> {
         self.load
     }
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn the_machine_answers_with_a_load_average_after_two_samples() {
+    fn the_machine_answers_with_a_load_average_from_the_first_sample() {
         let mut module = CpuModule::new();
         module.sample();
         let first = module.load_average().expect("the queue counter answers on this machine");

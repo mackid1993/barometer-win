@@ -24,6 +24,12 @@
 // the digits' cap box in the same units the Swift used, which keeps the
 // numbers here identical to the ones there and lets the whole set be tested
 // without a drawing surface anywhere near it.
+//
+// Nothing draws that geometry today: at fourteen device pixels an icon font
+// read better and won - see glyph.rs - and the GDI renderer that consumed
+// these shapes is gone. `shapes`, `Shape` and `Palette` are kept for their
+// tests and for the day the marks are drawn as vectors again; `Condition`,
+// from this file, is what everything uses.
 
 /// The conditions the marks cover, one per system symbol the Mac app names.
 ///
@@ -116,7 +122,7 @@ impl Condition {
     }
 }
 
-/// Which of a mark's four colors a shape takes.
+/// Which of a mark's three shape colors a shape takes.
 ///
 /// Named by role rather than by color so monochrome is a matter of resolving
 /// them all to one value, and so the rain that shares a mark with a bolt or a
@@ -411,9 +417,9 @@ fn fog_lines(out: &mut Vec<Shape>, cap: CapBox) {
 /// A question mark where the cloud would sit, for a code the source has not
 /// named.
 ///
-/// Only the hook and the dot: at this size a stem between them closes the gap
-/// that makes it read as two parts, and the hook alone is enough of the
-/// letter.
+/// The hook, a short tail and the dot. The tail stops well above the dot: at
+/// this size a stem that reached it would close the gap that makes the mark
+/// read as two parts.
 fn question_mark(out: &mut Vec<Shape>, cap: CapBox) {
     let r = 1.6;
     let (cx, cy) = (cap.mid_x(), cap.top - 4.7);

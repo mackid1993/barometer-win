@@ -4,9 +4,10 @@
 # Copyright (c) 2026 David Brustein
 #
 # Checks a built binary for local paths and anything else identifying the
-# machine it was built on. Called by scripts\build.ps1 and by the build
-# workflow; exits non-zero on a hit, so a release cannot be staged with them
-# still in it.
+# machine it was built on. Run by hand, against one binary at a time; exits
+# non-zero on a hit. scripts\build.ps1 carries the same check inline over
+# everything it stages, so a release cannot be packaged with them still in it -
+# this is the one to reach for when a single binary is in question.
 #
 #   scrub-check.ps1 target\release\barometer.exe
 #   scrub-check.ps1 dist\Barometer\barometer-sensors.exe

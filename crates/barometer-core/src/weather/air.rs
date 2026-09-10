@@ -19,7 +19,7 @@ const AIR_HOST: &str = "air-quality-api.open-meteo.com";
 /// What the air is like right now.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AirQuality {
-    /// The United States index, 0 upward; 300 and past is hazardous.
+    /// The United States index, 0 upward; past 300 is hazardous.
     pub us_aqi: Option<i64>,
     /// Micrograms per cubic meter.
     pub pm2_5: Option<f64>,

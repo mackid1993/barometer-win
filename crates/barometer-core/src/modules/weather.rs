@@ -212,8 +212,10 @@ fn worker(
                 return;
             }
             let woken = if settings.uses_current_location {
-                // Longer after each refusal - see LOCATE_DOUBLINGS.
-                let wait = RETRY * 2u32.pow(refusals.min(LOCATE_DOUBLINGS));
+                // A minute after the first refusal and twice as long after each
+                // since - see LOCATE_DOUBLINGS. The count already includes the
+                // refusal just suffered, so the first wait is the base one.
+                let wait = RETRY * 2u32.pow(refusals.saturating_sub(1).min(LOCATE_DOUBLINGS));
                 signal.wait_timeout(stopped, wait).map(|(guard, _)| guard).map_err(|_| ())
             } else {
                 // No saved location and no address lookup is not a failure
@@ -284,7 +286,7 @@ fn compass(bearing: f64) -> &'static str {
     const POINTS: [&str; 8] =
         ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
     // Wind direction is the direction it blows *from*, which is what the
-    // provider reports and what the sentence above says.
+    // provider reports and how the caller words it - "from the northwest".
     let index = (((bearing % 360.0 + 360.0) % 360.0) / 45.0).round() as usize % 8;
     POINTS[index]
 }
@@ -394,7 +396,9 @@ impl Module for WeatherModule {
                     crate::format::whole(degrees),
                     self.settings.units.temperature.symbol()
                 ))
-                    .reserving(format!("-99{}", self.settings.units.temperature.symbol()))
+                    .reserving(crate::weather::models::reserved_air_temperature(
+                        self.settings.units.temperature,
+                    ))
                     .with_badge(condition)
             }
             None => Readout::unavailable(),

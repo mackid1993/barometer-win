@@ -102,8 +102,8 @@ pub fn looks_like_vpn(if_type: u32, description: &str) -> bool {
 /// The band a Wi-Fi channel number sits in.
 ///
 /// 6 GHz channels reuse numbers from the 5 GHz plan, and the WLAN API's
-/// channel opcode does not say which; the 6 GHz numbers that are unique to
-/// that band are called out, the rest are read as 5 GHz.
+/// channel opcode does not say which; the 5 GHz plan's own numbers are called
+/// out and everything above them is read as 6 GHz.
 pub fn band_of(channel: u32) -> &'static str {
     match channel {
         1..=14 => "2.4 GHz",

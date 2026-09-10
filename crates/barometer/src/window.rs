@@ -55,10 +55,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 /// One module's place on the strip: two rows of already-formatted text.
 ///
-/// Except the weather, which is one row with a mark drawn around it. That is
-/// not a special case bolted on - it is the design: the condition lives in the
-/// bands above and below the digits that a two-row column would have used for
-/// its label, so the weather costs the strip a number's width and no more.
+/// Except the weather, which is one row with a mark beside it. That is not a
+/// special case bolted on - it is the design: the condition takes the place a
+/// two-row column would have spent on a label, so the weather costs the strip
+/// a mark's width beside a number and no more.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Column {
     pub top: String,
@@ -73,11 +73,6 @@ pub struct Column {
     /// Set on the weather column. The value is drawn beside this condition's
     /// mark, and `top` is ignored.
     pub badge: Option<Condition>,
-    /// What hovering this column says. Empty means no tooltip.
-    ///
-    /// The strip has room for a number and nothing else, so everything else a
-    /// module knows goes here.
-
     /// Whether `top` is a label rather than a second value.
     ///
     /// Only a label is drawn in the heading weight. A network column stacks
@@ -112,13 +107,12 @@ pub struct StripModel {
     /// labels shout or the values whisper, and at nine pixels on a taskbar
     /// that difference is most of the legibility.
     pub heading_font_weight: u32,
-    /// Gap between columns and padding at each end, in DIPs.
+    /// Gap between columns, in DIPs.
     ///
-    /// Carried on the model rather than left as constants, because the
-    /// settings window changes them and the readout has to follow without a
+    /// Carried on the model rather than left as a constant, because the
+    /// settings window changes it and the readout has to follow without a
     /// restart.
     pub gap_dip: f32,
-    pub padding_dip: f32,
 }
 
 /// What a right-click on the readout asked for.
@@ -219,7 +213,7 @@ fn wide(text: &str) -> Vec<u16> {
 
 /// Declares this process per-monitor DPI aware, before any window exists.
 ///
-/// Without it Windows virtualises coordinates for the whole process: a
+/// Without it Windows virtualizes coordinates for the whole process: a
 /// 48 pixel taskbar on a 150% display is reported as 32, the strip is built to
 /// match, and the result is a readout drawn two thirds of the size it should
 /// be with blurred text. Every measurement in this program assumes it is
@@ -401,8 +395,6 @@ unsafe fn hook_restack(strip: HWND) -> HWINEVENTHOOK {
         flags,
     )
 }
-/// Repaint cadence. The sampling thread decides when values change; this only
-/// bounds how stale the strip can look.
 
 /// The strip window.
 pub struct Strip {
@@ -658,11 +650,8 @@ impl Strip {
         }
     }
 
-    /// Replaces what the strip draws and asks for a repaint.
+    /// Replaces what the strip draws and redraws it.
     ///
-    /// Repainting is requested rather than done here: the caller is the
-    /// sampling thread and painting belongs to the thread that owns the
-    /// window.
     /// Returns the width the new model needs, in physical pixels.
     ///
     /// Measured in the font that will actually draw it rather than estimated
@@ -734,10 +723,11 @@ unsafe fn content_width(hwnd: HWND, state: &mut StripState) -> i32 {
     // few pixels over a slot boundary costs a whole further slot - forty-odd
     // pixels of taskbar to buy eight of margin. The reserved region is
     // quantized upwards anyway, so it is nearly always wider than the readout
-    // and the painter centres in whatever it gets; that slack is where the
-    // margin actually comes from. `padding_dip` is a preference for how much
-    // of it to keep, not a demand for more space, and the chevron end is
-    // protected by the inset the placement leaves rather than by this.
+    // and the painter centers in whatever it gets; that slack is where the
+    // margin actually comes from. The end-padding setting went for the same
+    // reason: it could only ever buy slots, never margin. The chevron end is
+    // protected by the inset the placement leaves rather than by anything
+    // here.
     let mut width = 0;
     for (index, column) in state.model.columns.iter().enumerate() {
         if index > 0 {
@@ -791,10 +781,24 @@ unsafe fn column_extents(
         cx: bottom_size.cx + label_width(dc, &column.bottom_label, heading_font),
         cy: bottom_size.cy,
     };
+    // A stack reading's caption is drawn in the heading face and the value
+    // after it in the value face, so the reservation has to be measured the
+    // same way round: `reserved` carries the value alone and the caption is
+    // added at the width it will really be drawn at.
+    //
+    // It used to be one string - "CPU: 100%" - measured wholly in the value
+    // face, which got both halves wrong. The caption was measured in the
+    // wrong font, and only *one* of the two rows' captions was counted, so a
+    // column whose second row said "GPU" reserved less than it drew. Both
+    // errors were small and both were in the same direction: the column grew
+    // by a pixel or two the first time a reading reached its widest, which is
+    // exactly the sideways shuffle a reserved width exists to prevent.
+    let caption = label_width(dc, &column.top_label, heading_font)
+        .max(label_width(dc, &column.bottom_label, heading_font));
     let held = if column.reserved.is_empty() {
         0
     } else {
-        measure(dc, &wide_no_nul(&column.reserved)).cx
+        caption + reserved_width(dc, &column.reserved)
     };
     let width = if column.badge.is_some() {
         // Rays fan past the digits and the crescent sits over the degree sign,
@@ -811,28 +815,21 @@ unsafe fn column_extents(
     (width, top_size, bottom_size)
 }
 
+/// The widest of a reservation's candidates, in the selected font.
+///
+/// See `module::RESERVED_SEPARATOR` for why a reservation is a set rather
+/// than one string.
+unsafe fn reserved_width(dc: windows_sys::Win32::Graphics::Gdi::HDC, reserved: &str) -> i32 {
+    reserved
+        .split(barometer_core::module::RESERVED_SEPARATOR)
+        .map(|candidate| measure(dc, &wide_no_nul(candidate)).cx)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Gap between the weather mark and its temperature, in DIPs.
 const MARK_GAP_DIP: f32 = 3.0;
 
-/// Gap between columns, in DIPs, before the user has said otherwise.
-///
-/// Wide enough that two columns of digits read as two numbers rather than one
-/// long one, and no wider. Fourteen was far too much: on a taskbar the readout
-/// competes for room with the task buttons, and space spent between columns is
-/// space the buttons lose for nothing.
-pub const COLUMN_GAP_DIP: f32 = 6.0;
-/// Padding at each end of the strip, in DIPs.
-///
-/// None, and that is deliberate. The reserved region is quantized to whole
-/// tray slots, so it is already up to a slot wider than the readout needs and
-/// the readout is centered in it - there is margin at both ends whether we ask
-/// for it or not. Adding padding on top only doubles a gap that was already
-/// too big, on a taskbar where every pixel spent is a pixel the task buttons
-/// do not get.
-pub const PADDING_DIP: f32 = 0.0;
-
-/// The color that gets keyed out, leaving the taskbar showing through.
-///
 /// How opaque the parts of the readout that draw nothing are.
 ///
 /// Invisible to the eye and solid to the mouse, which is the whole trick. See
@@ -880,11 +877,11 @@ fn dip_to_px(dip: f32, dpi: u32) -> i32 {
     (dip * dpi as f32 / 96.0).round() as i32
 }
 
-/// Builds the font, reusing the last one while nothing that shapes it changed.
-///
-/// Fonts are a limited GDI resource and creating one per paint is how a
-/// long-running program runs a desktop out of handles.
 /// The font for the values.
+///
+/// Reused while nothing that shapes it changed. Fonts are a limited GDI
+/// resource, and creating one per paint is how a long-running program runs a
+/// desktop out of handles.
 fn ensure_font(state: &mut StripState, dpi: u32) -> HFONT {
     let weight = state.model.font_weight;
     let family = state.model.font_family.clone();
@@ -900,9 +897,10 @@ fn ensure_heading_font(state: &mut StripState, dpi: u32) -> HFONT {
 
 /// Builds and caches one of the two faces.
 ///
-/// Both are invalidated together, on DPI or size, because they only ever
-/// differ in weight - so one cache pair of (dpi, size) covers them and there
-/// is no state in which one is stale and the other is not.
+/// Both are invalidated together, on DPI or size, because one cached pair of
+/// (dpi, size) covers them and there is no state in which one is stale and the
+/// other is not. A family or a weight chosen in settings is not in that pair:
+/// the caller drops both faces itself when either changes.
 fn build_font(
     state: &mut StripState,
     dpi: u32,
@@ -1035,13 +1033,13 @@ fn measure(dc: windows_sys::Win32::Graphics::Gdi::HDC, text: &[u16]) -> SIZE {
     size
 }
 
-/// Paints the strip into a memory bitmap and blits it in one go.
-///
-/// Drawing straight to the window would flicker: the taskbar is a busy surface
-/// and the strip repaints on a timer, so a partially drawn frame is visible.
 /// Diagnostic only: how many times the strip has actually repainted.
 pub static PAINTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Paints the strip into a memory bitmap and hands the whole surface over.
+///
+/// Drawing straight to the window would flicker: the taskbar is a busy surface
+/// and a partially drawn frame is visible over it.
 unsafe fn paint(hwnd: HWND, state: &mut StripState) {
     PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -1108,17 +1106,11 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
 
     // Centered in whatever width the window ended up with, rather than started
     // hard against the left edge. The reserved region is quantized to whole
-    // tray slots, so it is almost always a little wider than the readout needs,
-    // and left-aligning piles all of that slack against the right-hand end
-    // where it reads as a gap somebody forgot to close. Split evenly it reads
-    // as margin.
-    // Centred in whatever width the window ended up with. The reserved region
-    // is quantized to whole tray slots, so it is almost always a little wider
-    // than the readout needs; splitting that slack evenly is where the margin
-    // at each end comes from, and it costs no tray space because it is space
-    // the slot had already been paid for. Left-aligning would pile all of it
-    // against the right-hand end, where it reads as a gap somebody forgot to
-    // close.
+    // tray slots, so it is almost always a little wider than the readout needs;
+    // splitting that slack evenly is where the margin at each end comes from,
+    // and it costs no tray space because the slot had already been paid for.
+    // Left-aligning would pile all of it against the right-hand end, where it
+    // reads as a gap somebody forgot to close.
     let content = content_extent(memory_dc, state, gap, scale, mark_px, heading_font);
     let mut x = ((width - content) / 2).max(0);
 
@@ -1154,7 +1146,7 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
 
             // The accent is a second, smaller glyph from the same font. It
             // needs its own font object, so it is drawn only when there is one
-            // - which is nine conditions out of fourteen.
+            // - which is six conditions out of fourteen.
             if let Some(accent) = mark.accent {
                 SelectObject(memory_dc, accent_font as _);
                 let glyphs = [accent.glyph as u16];
@@ -1206,9 +1198,8 @@ unsafe fn paint(hwnd: HWND, state: &mut StripState) {
             TextOutW(memory_dc, value_x, y, text.as_ptr(), text.len() as i32);
         }
 
-        // Where this column ended up, for the tooltip that attaches to it and
-        // for the click that opens the weather panel. Recorded here because
-        // this is the only place that knows.
+        // Where this column ended up, for the click that opens its panel.
+        // Recorded here because this is the only place that knows.
         rects.push(RECT { left: x, top: 0, right: x + column_width, bottom: height });
 
         x += column_width + gap;
@@ -1486,8 +1477,9 @@ unsafe extern "system" fn window_proc(
 
 /// Converts a screen point into the taskbar's client space.
 ///
-/// The reserved region is reported in screen coordinates, and the readout is a
-/// child of the taskbar, so one has to be expressed in the other's terms.
+/// The reserved region is reported in screen coordinates and the taskbar lays
+/// its own contents out in its client space, so one has to be expressed in the
+/// other's terms.
 pub fn screen_to_taskbar(x: i32, y: i32) -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
@@ -2099,4 +2091,114 @@ mod tests {
         }
     }
 
+    /// No reading is wider, in real pixels, than the width its column holds.
+    ///
+    /// A character count is not the test. Segoe UI's figures are tabular but
+    /// Segoe UI Semibold's are not - measured here, `1` is six pixels and `4`
+    /// is nine at the size a 48 pixel taskbar draws - so a reserved string
+    /// picked for looking like a big number ("999", "-99") is narrower there
+    /// than readings the formatter really produces, and the column grows the
+    /// first time one of them arrives. That is the shuffle the reserved width
+    /// exists to stop, so the bound has to be measured in the face that draws
+    /// it, in every face the strip is likely to be drawn in.
+    #[test]
+    fn no_reading_is_wider_than_the_width_its_column_reserves() {
+        use barometer_core::format::{rate_in, RateUnit};
+        use barometer_core::weather::models::{reserved_air_temperature, TemperatureUnit};
+
+        // Both faces the strip is drawn in around here: the shipped default,
+        // whose figures are tabular, and the semibold one the author picked,
+        // whose are not. A reservation has to hold in both.
+        for family in ["Segoe UI", "Segoe UI Semibold"] {
+            // The owner's taskbar: 48 physical pixels at 144 DPI, two rows.
+            let dpi = 144;
+            let mut state = fresh_state();
+            state.model.text_dip = 9.92;
+            state.model.font_family = family.to_string();
+            state.model.heading_font_family = family.to_string();
+            state.model.font_weight = 400;
+            state.model.heading_font_weight = 600;
+
+            // SAFETY: a screen DC and a font, both released before returning.
+            unsafe {
+                let dc = GetDC(std::ptr::null_mut());
+                let font = ensure_font(&mut state, dpi);
+                let previous = SelectObject(dc, font as _);
+                let width = |text: &str| measure(dc, &wide_no_nul(text)).cx;
+                let held = |reserved: &str| reserved_width(dc, reserved);
+
+                // Every air temperature Open-Meteo returns for a place with
+                // people in it: Oymyakon to Furnace Creek, in each unit.
+                for (unit, low, high) in [
+                    (TemperatureUnit::Celsius, -68, 57),
+                    (TemperatureUnit::Fahrenheit, -90, 134),
+                ] {
+                    let reserved = reserved_air_temperature(unit);
+                    let room = held(&reserved);
+                    let mut widest = 0;
+                    for degrees in low..=high {
+                        let text = format!(
+                            "{}{}",
+                            barometer_core::format::whole(f64::from(degrees)),
+                            unit.symbol()
+                        );
+                        let drawn = width(&text);
+                        widest = widest.max(drawn);
+                        assert!(drawn <= room, "{family}: {text} is wider than the reserved {reserved:?}");
+                    }
+                    // Exact, not merely sufficient: a reservation wider than
+                    // the widest reading is taskbar spent on nothing.
+                    assert_eq!(widest, room, "{family}: the weather reserves more than it can draw");
+                }
+
+                // Every throughput, against what the network and disk columns
+                // hold. The four-figure case is real: binary units and a
+                // decimal number keep a rate in megabytes to 1024 of them.
+                let mega = 1024.0 * 1024.0;
+                for unit in [RateUnit::Bytes, RateUnit::Bits] {
+                    let room = held(unit.widest());
+                    let mut bytes_per_sec = 1.0;
+                    while bytes_per_sec < 4.0 * 1024.0 * mega {
+                        let text = rate_in(bytes_per_sec, unit);
+                        assert!(
+                            width(&text) <= room,
+                            "{family}: {text} is wider than the reserved {}",
+                            unit.widest()
+                        );
+                        bytes_per_sec *= 1.007;
+                    }
+                }
+
+                // And percentages, which is what every module and most stack
+                // readings come out as.
+                let room = width("100%");
+                for whole in 0..=100 {
+                    let text = barometer_core::format::percent(whole as f32 / 100.0);
+                    assert!(width(&text) <= room, "{family}: {text} is wider than the reserved 100%");
+                }
+
+                SelectObject(dc, previous);
+                ReleaseDC(std::ptr::null_mut(), dc);
+            }
+        }
+    }
+
+    /// A strip state with no fonts made yet, for tests that measure.
+    fn fresh_state() -> StripState {
+        StripState {
+            model: StripModel::default(),
+            font: None,
+            heading_font: None,
+            font_dpi: 0,
+            font_size_dip: 0.0,
+            icon_font: None,
+            icon_px: 0,
+            accent_font: None,
+            accent_px: 0,
+            width: 0,
+            pending: None,
+            column_rects: Vec::new(),
+            restyled: false,
+        }
+    }
 }

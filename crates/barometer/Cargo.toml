@@ -69,6 +69,10 @@ features = [
     # The tooltip control, for the hover detail the strip has no room to show.
     # comctl32 version 6 comes from the manifest; this is the other half of it.
     "Win32_UI_Controls",
+    # The common file dialogs, for exporting the settings file and reading
+    # one back in. comdlg32's dialog is one call with a struct and needs no
+    # COM, and on Windows 11 it opens the same picker IFileDialog would.
+    "Win32_UI_Controls_Dialogs",
     # CreateFileW, to ask the object manager whether PawnIO's device object is
     # there. Nothing here opens a file: the probe requests no access rights and
     # sends no IOCTL, because "does this name resolve, and would we be let in"

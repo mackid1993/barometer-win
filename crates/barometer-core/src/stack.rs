@@ -8,7 +8,7 @@
 // Ported from Sources/MenuBarStatsCore/Modules/Stacks/ in the macOS app.
 // A stack composes *readings* rather than whole module presentations, so one
 // item can mix CPU, memory, network and power. That is what makes the strip
-// affordable: nine modules each carrying their own label cost far more width
+// affordable: seven modules each carrying their own label cost far more width
 // than one stack showing the six numbers the user actually wanted.
 
 use crate::module::ModuleId;
@@ -115,9 +115,10 @@ impl StackEntry {
 
 /// Which units reserved widths are computed against.
 ///
-/// Standing in for the macOS `AppSettings` until the settings store exists. It
-/// is separate from the metric because the widest string a reading can show
-/// depends on the unit chosen for it, and the renderer sizes from that.
+/// The macOS `AppSettings`' share of this, built from the settings store by
+/// the renderer. It is separate from the metric because the widest string a
+/// reading can show depends on the unit chosen for it, and the renderer sizes
+/// from that.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct UnitPrefs {
     /// Whether *hardware* temperatures are shown in Fahrenheit -
@@ -427,7 +428,14 @@ impl StackMetric {
             // which `RateUnit::widest` answers.
             NetworkDownload | NetworkUpload => units.rate.widest(),
             SensorsFan => "9999r",
-            WeatherTemperature => "-99\u{00B0}",
+            // The strip draws the weather module's own string, which carries
+            // the unit letter - "72\u{00B0}F", not "72\u{00B0}" - so the
+            // reservation has to carry it too; without it this was a whole
+            // character short and the column grew as soon as a reading
+            // arrived. Both candidates, for the reasons on
+            // `reserved_air_temperature`; the two symbols measure the same,
+            // so one static pair covers either setting.
+            WeatherTemperature => "100\u{00B0}C\n-44\u{00B0}C",
         }
     }
 
@@ -651,7 +659,6 @@ impl StackSettings {
         }
     }
 
-    /// Whether a reading is already in this stack.
     /// The readings as a file should carry them: what this build knows, with
     /// what it does not put back where it was.
     ///
@@ -668,6 +675,7 @@ impl StackSettings {
         out
     }
 
+    /// Whether a reading is already in this stack.
     pub fn has(&self, metric: &StackMetric) -> bool {
         self.metrics.iter().any(|entry| &entry.metric == metric)
     }
@@ -683,9 +691,9 @@ impl StackSettings {
 
 /// The stacks the user has created, in display order.
 ///
-/// There is no cap. Every enabled stack is one more item counted when the
-/// strip picks its type size, so a great many stacks costs legibility rather
-/// than correctness.
+/// There is no cap. Every enabled stack is one more item the strip has to find
+/// room for, so a great many stacks costs taskbar width rather than
+/// correctness.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StacksSettings {
     pub stacks: Vec<StackSettings>,
@@ -878,8 +886,17 @@ mod tests {
         let fahrenheit = UnitPrefs { hardware_fahrenheit: true, ..celsius };
         assert_eq!(StackMetric::SensorsHottest.reserved_value(fahrenheit), "257\u{00B0}F");
         // The weather's column is the same width in either scale, so it does
-        // not follow this setting - or the weather's own.
-        assert_eq!(StackMetric::WeatherTemperature.reserved_value(fahrenheit), "-99\u{00B0}");
+        // not follow this setting - or the weather's own. It does carry the
+        // unit letter, because the string the strip draws carries one; without
+        // it this was a whole character short of every reading.
+        assert_eq!(
+            StackMetric::WeatherTemperature.reserved_value(fahrenheit),
+            "100\u{00B0}C\n-44\u{00B0}C"
+        );
+        assert_eq!(
+            StackMetric::WeatherTemperature.reserved_value(celsius),
+            StackMetric::WeatherTemperature.reserved_value(fahrenheit)
+        );
     }
 
     #[test]

@@ -3,8 +3,9 @@
 // Barometer - a system monitor for the Windows taskbar
 // Copyright (c) 2026 David Brustein
 //
-// The sampling engine and the readout modules. This crate knows nothing about
-// windows, painting, or settings: it turns syscalls into short strings.
+// The sampling engine and the readout modules. This crate creates no window
+// and paints nothing: it turns syscalls into short strings, and owns the
+// settings and the taskbar measurements those strings are laid out from.
 
 pub mod format;
 pub mod module;

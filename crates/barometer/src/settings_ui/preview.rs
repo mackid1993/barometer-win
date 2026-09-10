@@ -8,7 +8,7 @@
 // Composing a stack blind is guesswork, and the whole point of a live preview
 // is that a reading added to a stack appears in the column as it is added.
 // So the preview is rebuilt from the model on every change and drawn with
-// the same rules the strip uses - the same padding and gap the user set, the
+// the same rules the strip uses - the same gap the user set, the
 // same font, the same right-aligned two-row columns, the same weather mark
 // beside its temperature - on a ground the color of the taskbar.
 //
@@ -20,7 +20,6 @@
 // from the store.
 
 use barometer_core::module::{ModuleId, Readout};
-use barometer_core::settings::StripFont;
 use barometer_core::stack::{format_sensor, StackLayout, StackMetric, UnitPrefs};
 use barometer_core::taskbar::Density;
 use barometer_core::weather::badge::Condition;
@@ -118,9 +117,17 @@ pub fn cells(model: &Model, snapshot: &Snapshot, two_rows: bool) -> Vec<Cell> {
                                 [a] => (a.1.clone(), a.0.clone(), String::new(), String::new()),
                                 _ => (String::new(), String::new(), String::new(), String::new()),
                             };
-                            // The wider of the pair's reserved strings; the
+                            // The wider of the pair's reserved *values*; the
                             // first when they tie, so the choice is stable.
-                            let reserved = pair.iter().map(|r| format!("{}: {}", r.0, r.2)).fold(
+                            //
+                            // The caption is deliberately not in here. It is
+                            // drawn in the heading face, and this string is
+                            // measured in the value face, so a caption folded
+                            // into it is measured in the wrong font - and only
+                            // one of the two rows' captions would be counted.
+                            // The renderers add the wider caption themselves,
+                            // where they know which face draws it.
+                            let reserved = pair.iter().map(|r| r.2.clone()).fold(
                                 String::new(),
                                 |best, s| if s.chars().count() > best.chars().count() { s } else { best },
                             );
@@ -141,7 +148,9 @@ pub fn cells(model: &Model, snapshot: &Snapshot, two_rows: bool) -> Vec<Cell> {
                         .map(|(label, value, reserved)| Column {
                             top: value.clone(),
                             bottom: String::new(),
-                            reserved: format!("{label}: {reserved}"),
+                            // The value alone; the caption is `top_label` and
+                            // the renderers add its width in the heading face.
+                            reserved: reserved.clone(),
                             badge: None,
                             label_top: false,
                             dim: false,
@@ -258,40 +267,43 @@ pub fn sample_readout(id: ModuleId) -> Readout {
 /// `sample_readout`, with the network module's lines in the order the
 /// settings ask for, as the module itself would publish them.
 fn sample_readout_in(id: ModuleId, upload_first: bool) -> Readout {
+    // The reserved strings here are the modules' own, not approximations of
+    // them. The strip falls back to this readout for any module that has not
+    // reported yet, so a sample that reserves less than the module does is a
+    // column that widens on its first reading - and a preview that draws a
+    // narrower strip than the one it is previewing.
+    let rate = barometer_core::format::RateUnit::Bytes.widest();
     match id {
         ModuleId::Cpu => Readout::one("24%").reserving("100%"),
         ModuleId::Gpu => Readout::one("18%").reserving("100%"),
         ModuleId::Memory => Readout::one("61%").reserving("100%"),
-        ModuleId::Disks => Readout::two("2.10 MB/s", "512 KB/s").reserving("000 MB/s"),
-        ModuleId::Network if upload_first => {
-            Readout::two("\u{2191} 1.20 KB/s", "\u{2193} 12.3 KB/s").reserving("\u{2193} 000 MB/s")
-        }
-        ModuleId::Network => {
-            Readout::two("\u{2193} 12.3 KB/s", "\u{2191} 1.20 KB/s").reserving("\u{2193} 000 MB/s")
-        }
+        ModuleId::Disks => Readout::two("2.10 MB/s", "512 KB/s").reserving(rate),
+        ModuleId::Network if upload_first => Readout::two("\u{2191} 1.20 KB/s", "\u{2193} 12.3 KB/s")
+            .reserving(format!("\u{2193} {rate}")),
+        ModuleId::Network => Readout::two("\u{2193} 12.3 KB/s", "\u{2191} 1.20 KB/s")
+            .reserving(format!("\u{2193} {rate}")),
         ModuleId::Sensors => Readout::one("51\u{b0}C").reserving("100\u{b0}C"),
+        // The wider of the two units, since the sample does not know which
+        // one is set - see `reserved_air_temperature`.
         ModuleId::Weather => Readout::one("72\u{b0}F")
-            .reserving("-99\u{b0}F")
+            .reserving(barometer_core::weather::models::reserved_air_temperature(
+                TemperatureUnit::Fahrenheit,
+            ))
             .with_badge(Condition::PartlyCloudy),
     }
 }
 
-/// The type size and row count the strip would choose for this model.
-pub fn density(model: &Model, snapshot: &Snapshot) -> Density {
-    Density::choose_with_font(snapshot.taskbar_height_dip, model.shown_count(), &model.settings.font)
+/// The type size and row count the strip would choose for this taskbar.
+pub fn density(snapshot: &Snapshot) -> Density {
+    Density::choose(snapshot.taskbar_height_dip)
 }
 
-/// The header line over the composer: "3 items · 12 pt text".
+/// The header line over the composer: "3 items · 9 pt text · two rows".
 pub fn summary(model: &Model, snapshot: &Snapshot) -> String {
     let count = model.shown_count();
-    let density = density(model, snapshot);
+    let density = density(snapshot);
     let items = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
-    let limited = model.settings.font.max_size_dip < Density::choose(snapshot.taskbar_height_dip, count).text_dip;
-    let size = if limited {
-        format!("{} pt text (your limit)", density.text_dip.round())
-    } else {
-        format!("{} pt text", density.text_dip.round())
-    };
+    let size = format!("{} pt text", density.text_dip.round());
     let rows = if density.two_rows { "two rows" } else { "one row" };
     format!("{items} · {size} · {rows}")
 }
@@ -330,7 +342,7 @@ pub fn paint(
     canvas.stroke_round(area, super::ui::RADIUS_SURFACE, theme.stroke_card);
     let mut spans = Vec::new();
 
-    let density = density(model, snapshot);
+    let density = density(snapshot);
     let cells = cells(model, snapshot, density.two_rows);
     let font = &model.settings.font;
     let scale = canvas.scale;
@@ -338,7 +350,12 @@ pub fn paint(
     let text_font = canvas.fonts.get(&font.family, text_px, font.weight.dwrite_weight() as i32);
     // The heading row of a label-over-value column has a weight of its own;
     // everything else on the strip, a stack's "CPU 24%" included, is a value.
-    let heading_font = canvas.fonts.get(&font.family, text_px, font.heading_weight.dwrite_weight() as i32);
+    // The heading face the user chose, or the value face when they chose
+    // none - the same rule `window::ensure_heading_font` draws by. The
+    // preview promises to show every change on the pane, and for a while it
+    // built the headings from the value family and quietly broke that.
+    let heading_family = font.heading_family.as_deref().unwrap_or(font.family.as_str());
+    let heading_font = canvas.fonts.get(heading_family, text_px, font.heading_weight.dwrite_weight() as i32);
 
     // The band the strip occupies: the taskbar's height, centered in the
     // area, so a 32 DIP small-taskbar preview reads as short rather than as
@@ -354,7 +371,6 @@ pub fn paint(
         return spans;
     }
 
-    let padding = to_px(model.settings.padding_dip, scale);
     let gap = to_px(model.settings.column_gap_dip, scale);
     let stack_gap = to_px(STACK_GAP_DIP, scale);
     let mark_gap = to_px(MARK_GAP_DIP, scale);
@@ -392,10 +408,21 @@ pub fn paint(
             let (bottom_cx, bottom_cy, bottom_value_x) =
                 measure_line(&column.bottom_label, &column.bottom, text_font);
             let bottom = SIZE { cx: bottom_cx, cy: bottom_cy };
+            // `reserved` is the value alone, so the caption's own width comes
+            // from the measured line - `window.rs` does the same, and the two
+            // have to agree or the preview is not a preview. It may also hold
+            // several candidates; the column is as wide as the widest.
+            let caption = top_value_x.max(bottom_value_x);
             let held = if column.reserved.is_empty() {
                 0
             } else {
-                canvas.font_measure(&wide(&column.reserved), text_font).cx
+                caption
+                    + column
+                        .reserved
+                        .split(barometer_core::module::RESERVED_SEPARATOR)
+                        .map(|candidate| canvas.font_measure(&wide(candidate), text_font).cx)
+                        .max()
+                        .unwrap_or(0)
             };
             let (width, mark) = if column.badge.is_some() {
                 let mark = icon_size(bottom.cy);
@@ -430,7 +457,7 @@ pub fn paint(
 
     let width = band_px.width();
     let mut x = band_px.left
-        + if content < width - padding * 2 { (width - content) / 2 } else { padding };
+        + ((width - content) / 2).max(0);
 
     let label_ink = ink.over(ground, 0.82);
     let dim_ink = ink.over(ground, 0.70);
@@ -538,16 +565,6 @@ pub fn item_at(spans: &[(StripItem, f32, f32)], x: f32) -> Option<StripItem> {
     spans.iter().find(|(_, left, right)| x >= *left && x < *right).map(|(item, _, _)| *item)
 }
 
-/// A font size chosen for a ceiling, as the Appearance caption reports it.
-pub fn size_caption(font: &StripFont, snapshot: &Snapshot, count: usize) -> String {
-    let density = Density::choose_with_font(snapshot.taskbar_height_dip, count, font);
-    format!(
-        "The strip sizes itself from the taskbar and the item count; this is the upper limit. Now: {} items \u{2192} {} pt.",
-        count,
-        density.text_dip.round()
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,8 +650,11 @@ mod tests {
         assert_eq!(stack.columns[1].top, "61%");
         assert_eq!(stack.columns[1].top_label, "MEM");
         assert_eq!(stack.columns[1].bottom, "");
-        // Sized from the widest thing a reading can show, not from today's.
-        assert_eq!(stack.columns[0].reserved, "CPU: 100%");
+        // Sized from the widest thing a reading can show, not from today's -
+        // and from the *value* alone. The caption goes with `top_label`, so
+        // the renderers can measure it in the heading face it is drawn in
+        // rather than in the value face this string is measured in.
+        assert_eq!(stack.columns[0].reserved, "100%");
     }
 
     #[test]
@@ -689,13 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_counts_what_is_shown_and_says_when_the_ceiling_bites() {
+    fn the_summary_counts_what_is_shown() {
         let mut m = model();
         let snapshot = Snapshot::default();
         assert!(summary(&m, &snapshot).starts_with("7 items"));
-        assert!(!summary(&m, &snapshot).contains("your limit"));
-        m.settings.font.max_size_dip = 9.0;
-        assert!(summary(&m, &snapshot).contains("9 pt text (your limit)"));
         for entry in m.settings.modules.iter_mut() {
             entry.enabled = false;
         }

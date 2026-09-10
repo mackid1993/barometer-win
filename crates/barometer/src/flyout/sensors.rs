@@ -42,8 +42,8 @@ use crate::settings_ui::theme::{module_color, Color};
 /// `history.recent(60)`.
 pub const HISTORY: usize = 60;
 
-/// Fractional digits on a reading: SensorSettings.swift's default.
-/// docs/ui-layouts.md offers zero or one; a setting is not in core yet.
+/// Fractional digits on a reading: SensorSettings.swift's default, and what
+/// a panel shows until the store's own `decimal_places` is applied to it.
 pub const DEFAULT_DECIMAL_PLACES: usize = 1;
 
 /// The sparkline beside a reading, from SensorReadingRow's frame.

@@ -167,10 +167,11 @@ pub struct NetInterface {
     pub is_tunnel: bool,
 }
 
-/// Every operational, non-loopback interface with its counters.
+/// Every interface worth offering, with its counters - `is_selectable` above
+/// says what that leaves out.
 ///
-/// Loopback is left out: traffic to 127.0.0.1 is not network activity in any
-/// sense the user means by it.
+/// Loopback is one of the four: traffic to 127.0.0.1 is not network activity
+/// in any sense the user means by it.
 pub fn net_interfaces() -> Vec<NetInterface> {
     let mut table: *mut MIB_IF_TABLE2 = ptr::null_mut();
     // SAFETY: GetIfTable2 allocates and writes the pointer. On success we own

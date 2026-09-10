@@ -22,7 +22,6 @@
 
 use barometer_core::module::{ModuleId, Readout};
 use barometer_core::sensors::Sensor;
-use barometer_core::settings::StripFont;
 use barometer_core::stack::{StackEntry, StackLayout, StackMetric, StackSettings, StacksSettings};
 use barometer_core::store::{self, ModuleEntry, Settings};
 use barometer_core::weather::models::Location;
@@ -181,7 +180,8 @@ impl Model {
         }
     }
 
-    /// How many items the strip draws, which is what the type ladder counts.
+    /// How many items the strip draws, which is what the Strip pane's summary
+    /// line counts.
     pub fn shown_count(&self) -> usize {
         self.order.iter().filter(|item| self.is_shown(**item)).count()
     }
@@ -390,15 +390,37 @@ pub fn module_blurb(id: ModuleId) -> &'static str {
     }
 }
 
+/// What the Sensors module's column is showing.
+///
+/// The module shows the pinned reading when there is one and the source
+/// still reports it, and the hottest processor temperature otherwise - the
+/// same fallback `SensorsModule` makes, so the caption never promises a
+/// reading the strip is not drawing. The macOS app lists the chosen sensor
+/// by name in the same place, which is what `Pinned` carries.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SensorShown<'a> {
+    Hottest,
+    Pinned(&'a str),
+    /// Pinned to a sensor the source is not reporting, so the strip has
+    /// fallen back to the hottest.
+    PinnedMissing,
+}
+
 /// How a module's own column is drawn, for the list caption.
-pub fn module_style(id: ModuleId, upload_first: bool) -> &'static str {
+pub fn module_style(id: ModuleId, upload_first: bool, sensor: SensorShown) -> String {
     match id {
-        ModuleId::Cpu | ModuleId::Gpu | ModuleId::Memory => "Label over value",
-        ModuleId::Disks => "Read over write",
-        ModuleId::Network if upload_first => "Upload over download",
-        ModuleId::Network => "Download over upload",
-        ModuleId::Sensors => "Hottest processor temperature",
-        ModuleId::Weather => "Condition mark and temperature",
+        ModuleId::Cpu | ModuleId::Gpu | ModuleId::Memory => "Label over value".to_string(),
+        ModuleId::Disks => "Read over write".to_string(),
+        ModuleId::Network if upload_first => "Upload over download".to_string(),
+        ModuleId::Network => "Download over upload".to_string(),
+        ModuleId::Sensors => match sensor {
+            SensorShown::Hottest => "Hottest processor temperature".to_string(),
+            SensorShown::Pinned(name) => format!("{name}, pinned"),
+            SensorShown::PinnedMissing => {
+                "Hottest processor temperature, while the pinned sensor is not reporting".to_string()
+            }
+        },
+        ModuleId::Weather => "Condition mark and temperature".to_string(),
     }
 }
 
@@ -468,9 +490,9 @@ impl ModuleFact {
 /// hidden by a stack says so and names the stack; a module that is off but
 /// still feeding a stack says both, because "Off" alone would suggest the
 /// reading is gone from the strip when it is not.
-pub fn module_caption(model: &Model, id: ModuleId, fact: ModuleFact) -> String {
+pub fn module_caption(model: &Model, id: ModuleId, fact: ModuleFact, sensor: SensorShown) -> String {
     let in_stacks = model.stacks_using(id);
-    let style = module_style(id, model.settings.network_upload_first);
+    let style = module_style(id, model.settings.network_upload_first, sensor);
     if model.is_module_enabled(id) {
         if let Some(stack) = model.hidden_by(id) {
             return format!("Hidden while {} is on", stack_title(stack));
@@ -480,7 +502,7 @@ pub fn module_caption(model: &Model, id: ModuleId, fact: ModuleFact) -> String {
         }
         match in_stacks.first() {
             Some(stack) => format!("{style} · also in {}", stack_title(stack)),
-            None => style.to_string(),
+            None => style,
         }
     } else {
         match in_stacks.first() {
@@ -524,14 +546,6 @@ pub fn clamp_gap(dip: f32) -> f32 {
     dip.clamp(store::MIN_SPACING_DIP, store::MAX_SPACING_DIP)
 }
 
-pub fn clamp_padding(dip: f32) -> f32 {
-    dip.clamp(store::MIN_SPACING_DIP, store::MAX_SPACING_DIP)
-}
-
-pub fn clamp_size(dip: f32) -> f32 {
-    dip.clamp(StripFont::MIN_SIZE_DIP, StripFont::MAX_SIZE_DIP)
-}
-
 pub fn clamp_poll(seconds: u32) -> u32 {
     seconds.clamp(store::MIN_POLL_SECONDS, store::MAX_POLL_SECONDS)
 }
@@ -562,8 +576,8 @@ pub enum SensorSource {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub readouts: Vec<(ModuleId, Readout)>,
-    /// The taskbar's height in DIPs, which the preview and the type ladder
-    /// both size from.
+    /// The taskbar's height in DIPs, which the preview draws at and which
+    /// decides whether the strip has room for two rows.
     pub taskbar_height_dip: f32,
     pub sensors: Vec<Sensor>,
     pub sensor_source: SensorSource,
@@ -765,35 +779,51 @@ mod tests {
     }
 
     #[test]
+    fn the_sensors_caption_names_the_pinned_sensor_and_says_when_it_has_fallen_back() {
+        let mut m = model();
+        m.set_item_enabled(StripItem::Module(ModuleId::Sensors), true);
+        assert_eq!(
+            module_caption(&m, ModuleId::Sensors, ModuleFact::Fine, SensorShown::Hottest),
+            "Hottest processor temperature"
+        );
+        assert_eq!(
+            module_caption(&m, ModuleId::Sensors, ModuleFact::Fine, SensorShown::Pinned("CPU Package")),
+            "CPU Package, pinned"
+        );
+        assert!(module_caption(&m, ModuleId::Sensors, ModuleFact::Fine, SensorShown::PinnedMissing)
+            .starts_with("Hottest processor temperature, while"));
+    }
+
+    #[test]
     fn the_module_caption_says_which_of_the_two_things_is_happening() {
         let mut m = model();
-        assert_eq!(module_caption(&m, ModuleId::Cpu, ModuleFact::Fine), "Label over value");
-        assert_eq!(module_caption(&m, ModuleId::Gpu, ModuleFact::Fine), "Off");
+        assert_eq!(module_caption(&m, ModuleId::Cpu, ModuleFact::Fine, SensorShown::Hottest), "Label over value");
+        assert_eq!(module_caption(&m, ModuleId::Gpu, ModuleFact::Fine, SensorShown::Hottest), "Off");
 
         let id = stack_with(&mut m, &[StackMetric::CpuTotal, StackMetric::GpuUtilization], false);
         m.set_stack_name(id, "Main");
         // On, and also inside a stack that leaves its column alone.
         assert_eq!(
-            module_caption(&m, ModuleId::Cpu, ModuleFact::Fine),
+            module_caption(&m, ModuleId::Cpu, ModuleFact::Fine, SensorShown::Hottest),
             "Label over value · also in Main"
         );
         // Off on its own, but its reading still reaches the strip through Main.
-        assert_eq!(module_caption(&m, ModuleId::Gpu, ModuleFact::Fine), "Off · in Main");
+        assert_eq!(module_caption(&m, ModuleId::Gpu, ModuleFact::Fine, SensorShown::Hottest), "Off · in Main");
 
         m.set_stack_hides_sources(id, true);
-        assert_eq!(module_caption(&m, ModuleId::Cpu, ModuleFact::Fine), "Hidden while Main is on");
+        assert_eq!(module_caption(&m, ModuleId::Cpu, ModuleFact::Fine, SensorShown::Hottest), "Hidden while Main is on");
         // The network caption says which rate is on top, since that is the
         // one thing about the column a person can change.
         m.set_item_enabled(StripItem::Module(ModuleId::Network), true);
-        assert_eq!(module_caption(&m, ModuleId::Network, ModuleFact::Fine), "Download over upload");
+        assert_eq!(module_caption(&m, ModuleId::Network, ModuleFact::Fine, SensorShown::Hottest), "Download over upload");
         m.settings.network_upload_first = true;
-        assert_eq!(module_caption(&m, ModuleId::Network, ModuleFact::Fine), "Upload over download");
+        assert_eq!(module_caption(&m, ModuleId::Network, ModuleFact::Fine, SensorShown::Hottest), "Upload over download");
         // A machine fact outranks the style but not the switch: a module
         // that is off says so, whatever the machine could not do for it.
-        assert_eq!(module_caption(&m, ModuleId::Sensors, ModuleFact::NeedsSensorSource), "Off");
+        assert_eq!(module_caption(&m, ModuleId::Sensors, ModuleFact::NeedsSensorSource, SensorShown::Hottest), "Off");
         m.set_item_enabled(StripItem::Module(ModuleId::Sensors), true);
         assert_eq!(
-            module_caption(&m, ModuleId::Sensors, ModuleFact::NeedsSensorSource),
+            module_caption(&m, ModuleId::Sensors, ModuleFact::NeedsSensorSource, SensorShown::Hottest),
             "Needs a sensor source"
         );
     }
@@ -820,11 +850,9 @@ mod tests {
     }
 
     #[test]
-    fn clamps_hold_to_the_stores_and_the_fonts_limits() {
+    fn clamps_hold_to_the_stores_limits() {
         assert_eq!(clamp_gap(-3.0), store::MIN_SPACING_DIP);
-        assert_eq!(clamp_padding(1000.0), store::MAX_SPACING_DIP);
-        assert_eq!(clamp_size(2.0), StripFont::MIN_SIZE_DIP);
-        assert_eq!(clamp_size(40.0), StripFont::MAX_SIZE_DIP);
+        assert_eq!(clamp_gap(1000.0), store::MAX_SPACING_DIP);
         assert_eq!(clamp_poll(0), store::MIN_POLL_SECONDS);
         assert_eq!(clamp_poll(999), store::MAX_POLL_SECONDS);
     }

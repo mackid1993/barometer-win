@@ -10,8 +10,9 @@ use crate::sys::{self, Memory};
 /// Physical memory in use.
 ///
 /// "Used" here is total minus available, which is what Task Manager's
-/// percentage reports. It is not the same as the Mac's memory pressure, and
-/// the detail panel will want to say so once it exists.
+/// percentage reports. It is not the same as the Mac's memory pressure, which
+/// Windows has no figure for: the panel and the `MemoryPressure` stack reading
+/// both stand in commit charge against its limit, and say so.
 #[derive(Default)]
 pub struct MemoryModule {
     memory: Option<Memory>,
@@ -119,7 +120,7 @@ mod tests {
     use crate::weather::models::TemperatureUnit;
 
     #[test]
-    fn a_stack_reads_the_used_share_the_used_bytes_and_the_free_bytes() {
+    fn a_stack_reads_every_memory_figure_the_module_has() {
         let module = MemoryModule {
             samples: 0,
             memory: Some(Memory { total: 32 << 30, available: 8 << 30 }),

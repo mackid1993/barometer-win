@@ -152,11 +152,13 @@ ship a binary carrying the path it was built on.
 
 Two things worth knowing while working on it:
 
-- `barometer.exe --strip` draws in the system tray. Without it you get a console
-  readout of the same numbers, which is easier to watch.
-- `barometer.exe --marks sheet.bmp` lays out all fourteen weather marks at three
-  times life size. They are too small to judge one at a time in a live tray,
-  at whatever the weather happens to be doing.
+- Drawing on the taskbar is what running it does. `barometer.exe 6 --console`
+  prints six samples of the same numbers to the console it was started from and
+  exits, which is easier to watch; `0` there runs until interrupted.
+- `barometer.exe --marks sheet.bmp` lays out all fourteen weather marks on the
+  taskbar's own dark, each drawn twice: at 15 pixels, which is life size on the
+  strip, and again at 60. They are too small to judge one at a time in a live
+  tray, at whatever the weather happens to be doing.
 
 ## License
 

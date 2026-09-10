@@ -10,9 +10,9 @@ use std::fmt;
 
 /// The modules Barometer knows about, in the order they appear by default.
 ///
-/// The discriminants are stable: they are written to the settings file, so
-/// inserting a variant in the middle would silently reorder a user's strip.
-/// Append only.
+/// The discriminants are not what is persisted: the settings file writes each
+/// module by `key()` and reads it back the same way, so a variant inserted in
+/// the middle cannot silently reorder somebody's strip.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ModuleId {
     Cpu,
@@ -28,7 +28,8 @@ impl ModuleId {
     /// Every module, in the order the macOS app lists them, which is the order
     /// the settings picker and `StackMetric::by_module` both follow.
     ///
-    /// The macOS enum also has `time`, `combined`, `focus` and `nowPlaying`.
+    /// The macOS enum also has `battery`, `time`, `combined`, `focus` and
+    /// `nowPlaying`.
     /// Time and Battery are both dropped for the same reason: Windows already
     /// shows a clock and a battery in the shell, each with a flyout carrying
     /// the detail, so a second one spends strip width duplicating what the
@@ -96,6 +97,22 @@ impl fmt::Display for ModuleId {
     }
 }
 
+/// Separates the candidates of a reserved width.
+///
+/// A reservation is a *set* of strings, not one, because which of a
+/// formatter's outputs is the widest is a question about the face and not
+/// about the number. Segoe UI's figures are tabular, so every three-digit
+/// reading measures the same and all of them beat a minus and two digits.
+/// Segoe UI Semibold's are not - measured at 150%, `1` is six pixels, `4` is
+/// nine and the rest eight - so there "-44" is wider than "134". A literal
+/// picked in one face is a pixel or two short in the other, and short is what
+/// makes a column grow the first time the reading turns up, which is the
+/// shuffle the whole reserved-width idea exists to stop.
+///
+/// A newline, because a reserved string is only ever measured and never
+/// drawn, so there is nothing for it to break.
+pub const RESERVED_SEPARATOR: &str = "\n";
+
 /// One module's current reading, formatted for the strip.
 ///
 /// `primary` and `secondary` are already-formatted text rather than numbers
@@ -114,6 +131,10 @@ pub struct Readout {
     ///
     /// None means "size me to my content", which is right for anything whose
     /// width genuinely does not vary.
+    ///
+    /// It may hold several candidates, separated by [`RESERVED_SEPARATOR`],
+    /// in which case the column is as wide as the widest of them. See that
+    /// constant for why one string is not always enough.
     pub reserved: Option<String>,
 
     /// The weather mark, when there is one.

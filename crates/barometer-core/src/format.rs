@@ -7,7 +7,9 @@
 //
 // The strip's rule is that an item keeps a constant width while its numbers
 // change, so these formatters trade precision for a stable column count: three
-// significant figures, never four, and the unit carries the magnitude.
+// significant figures below a thousand, and the unit carries the magnitude. A
+// rate stays in one binary unit up to 1024 of them, so four digits is the
+// widest it gets - see `RateUnit::widest`.
 
 /// Binary units, which is what every tool in this category means by KB/s even
 /// where it says so incorrectly. Staying consistent with the neighbors beats
@@ -138,8 +140,9 @@ pub fn whole(value: f64) -> String {
     }
 }
 
-/// Three significant figures, so the text never grows past five characters
-/// before the unit: `9.99`, `99.9`, `999`.
+/// Three significant figures below a thousand, so the text never grows past
+/// four characters before the unit: `9.99`, `99.9`, `999` - and `1024`, which
+/// is as far as a rate climbs before it changes unit.
 fn three_figures(v: f64) -> String {
     if v < 10.0 {
         format!("{v:.2}")
@@ -220,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn rates_stay_narrow() {
+    fn a_rate_scales_to_its_unit_and_keeps_three_figures() {
         assert_eq!(rate(1024.0), "1.00 KB/s");
         assert_eq!(rate(1024.0 * 1536.0), "1.50 MB/s");
     }

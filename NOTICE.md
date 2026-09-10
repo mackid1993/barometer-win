@@ -11,16 +11,20 @@ who redistributes this.
 
 Temperatures, fan speeds and voltages come from
 [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor),
-under the **Mozilla Public License 2.0**. Barometer links
-`LibreHardwareMonitorLib` into `barometer-sensors.exe`, a small helper program
-whose whole job is to read sensors and print them.
+under the **Mozilla Public License 2.0**. `barometer-sensors.exe`, a small
+helper program whose whole job is to read sensors and print them, is *compiled
+against* `LibreHardwareMonitorLib` and ships without a byte of it: the library
+is loaded at run time from an installation on the user's own machine.
+Barometer will download upstream's own release into the user's application data
+when asked, and redistributes none of it.
 
-MPL-2.0 is a file-level copyleft. `helper/Program.cs` carries an MPL-2.0 header
-because it is written against that library's interfaces, and the library itself
-is redistributed unmodified. Anyone receiving a build of the helper is entitled
-to the source of the MPL-covered files, which is in this repository and at the
-upstream project above. MPL-2.0 is compatible with GPL-3.0, which is what makes
-the combination in this repository possible at all.
+MPL-2.0 is a file-level copyleft. `helper/Program.cs` and
+`helper/LibraryLocator.cs` carry MPL-2.0 headers because they are written
+against that library's interfaces, and anyone receiving a build of the helper is
+entitled to their source, which is in this repository. Nothing of the library
+itself is distributed here, so nothing further is owed for it. MPL-2.0 is
+compatible with GPL-3.0, which is what makes the combination in this repository
+possible at all.
 
 Windows publishes no API for temperature, fan or voltage sensors. There is no
 version of this program that reads them without something like
@@ -49,7 +53,9 @@ honored in the settings pane.
 
 Approximate location, when the user has not chosen one, comes from
 [ipapi.co](https://ipapi.co/) with [ipwho.is](https://ipwho.is/) as a fallback.
-Neither is asked more than once per run.
+Neither is asked more than once per run. The network panel's optional public
+address comes from [ipify](https://www.ipify.org/), and only while that setting
+is on and the panel is open.
 
 ## Rust crates
 
@@ -60,7 +66,15 @@ Neither is asked more than once per run.
   only; it compiles the icon and version block into the executable and is not
   part of what ships.
 
-Full license texts for these are reproduced in `licenses/`.
+Their full license texts are in each project's own repository, linked above,
+and in the crate sources under `~\.cargo\registry`.
+
+## The .NET runtime
+
+`barometer-sensors.exe` is published self-contained, so the parts of
+[.NET](https://github.com/dotnet/runtime) it needs are inside it - Microsoft's,
+under the **MIT license**, redistributed unmodified. Nothing else in Barometer
+is .NET, and a machine with no .NET installed runs all of this.
 
 ## Barometer for macOS
 

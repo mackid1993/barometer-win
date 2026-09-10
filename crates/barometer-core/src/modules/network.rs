@@ -33,9 +33,8 @@ impl Default for NetworkModule {
             down: 0.0,
             up: 0.0,
             reading: false,
-            // On by default. Two stacked rates with nothing to tell them apart
-            // is a puzzle: the order is the only clue, and the reader has to
-            // remember which way round it goes every time they glance at it.
+            // Off, so the readout leads with the download - the Mac app's
+            // order. See `readout` for why it is a preference at all.
             upload_first: false,
             unit: RateUnit::default(),
             interface: None,
@@ -170,7 +169,9 @@ impl Module for NetworkModule {
         } else {
             ("\u{2193}", "\u{2191}")
         };
-        let (down, up) = (
+        // Named for their rows rather than their directions: which rate is on
+        // top is exactly what `upload_first` decides.
+        let (top, bottom) = (
             format!("{first_arrow} {}", format::rate_in(first, self.unit)),
             format!("{second_arrow} {}", format::rate_in(second, self.unit)),
         );
@@ -179,6 +180,6 @@ impl Module for NetworkModule {
         // written to the same width, so switching bytes to bits does not shove
         // everything after this column sideways.
         let reserved = format!("\u{2193} {}", self.unit.widest());
-        Readout::two(down, up).reserving(reserved)
+        Readout::two(top, bottom).reserving(reserved)
     }
 }

@@ -8,11 +8,10 @@
 // Read and write at the top, with the last few minutes of each mirrored
 // about a centerline; then every mounted volume with a capacity bar; then
 // each physical disk with rates of its own. The order is the Mac's and so is
-// what every card says. What differs is how much Windows has been asked for
-// so far: the strip's DiskModule reads the machine's total read and write
-// rate and nothing else, so the volume and device cards draw a calm line
-// until core enumerates them, and the hero carries no volume until there is
-// one to carry.
+// what every card says. The strip's DiskModule reads the machine's total read
+// and write rate; the volumes and the physical disks are enumerated beside it
+// and handed in, and each card draws a calm line for as long as its list is
+// empty rather than an error - a machine can genuinely have nothing to show.
 //
 // Nothing here draws. `build` lays elements out in DIPs through the shared
 // Builder and the chrome paints them, which is what lets the tests hold the
@@ -80,8 +79,6 @@ impl Volume {
         self.used_fraction() >= CRITICAL_FRACTION
     }
 
-    /// The label, or the mount where there is no label: a bare "D:" is
-    /// still a name, and an empty line above a bar is not.
     /// The label, or what Explorer calls an unlabeled volume - "Local Disk
     /// (C:)" - so the row does not say "C:" twice.
     fn display_name(&self) -> &str {
@@ -124,10 +121,10 @@ pub struct DisksSnapshot {
     /// Oldest first, never longer than HISTORY.
     pub history: Vec<(f32, f32)>,
     /// In the order they should be shown, the selected or system volume
-    /// first, which is what the hero reports. Empty until core enumerates
-    /// volumes.
+    /// first, which is what the hero reports. Empty until the first sample
+    /// enumerates them.
     pub volumes: Vec<Volume>,
-    /// Empty until core reads the per-instance PhysicalDisk counters.
+    /// Empty until the per-instance PhysicalDisk counters have been read.
     pub devices: Vec<Device>,
 }
 
@@ -596,7 +593,7 @@ mod tests {
             .find(|e| matches!(&e.kind, Kind::Text { style: Style::Title, .. }))
             .expect("a headline value");
         assert!(matches!(&headline.kind, Kind::Text { text, .. } if text == "45%"));
-        // A volume with no label is named by its mount.
+        // Every volume carries its mount under the name, labeled or not.
         assert!(texts.contains(&"D:"));
         assert!(texts.contains(&"25% used"));
     }

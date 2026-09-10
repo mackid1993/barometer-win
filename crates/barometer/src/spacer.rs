@@ -265,7 +265,6 @@ impl Rect {
             && other.top < self.bottom
     }
 
-    /// The smallest rectangle containing both, ignoring empty ones.
     /// Whether this rectangle lies entirely inside `other`.
     pub fn within(self, other: Rect) -> bool {
         !self.is_empty()
@@ -275,6 +274,7 @@ impl Rect {
             && self.bottom <= other.bottom
     }
 
+    /// The smallest rectangle containing both, ignoring empty ones.
     pub fn union(self, other: Rect) -> Rect {
         if self.is_empty() {
             return other;
@@ -562,7 +562,7 @@ mod pitch_tests {
     }
 
     #[test]
-    fn the_pitch_is_one_icons_width() {
+    fn the_pitch_is_the_step_from_one_icon_to_the_next() {
         let rects = [slot(100, 42), slot(142, 42), slot(184, 42)];
         assert_eq!(slot_pitch(&rects), Some(42));
     }

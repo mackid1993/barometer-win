@@ -25,9 +25,10 @@ const OWNER_CLASS: &str = "BarometerTrayReserve";
 
 /// The tooltip every placeholder carries.
 ///
-/// It is also how leftovers from a previous run are recognized: the shell
-/// records it as `InitialTooltip`, and that survives the icon being removed,
-/// where anything transient would not.
+/// The shell records it as `InitialTooltip` and shows it wherever it names a
+/// tray icon. Leftovers from a previous run are found by `IconGuid` rather
+/// than by this: a GUID is an identity this program minted and can prove, a
+/// tooltip is only a string anyone may write.
 pub const RESERVE_TIP: &str = "Barometer reserved";
 
 pub fn wide(text: &str) -> Vec<u16> {
@@ -265,13 +266,15 @@ pub fn promote(guid: Guid) -> bool {
 
 /// Deletes notification-area entries left behind by a previous run.
 ///
-/// A normal exit cleans up after itself; a crash or a force-kill does not, and
-/// the orphans would otherwise accumulate in the user's settings forever.
-/// Recognized by the tooltip the shell recorded, which outlives the icon.
+/// Entries are never deleted on an ordinary exit - that is what kills a batch
+/// of identities permanently, because the shell goes on recognizing them and
+/// never writes their entries again - so every run leaves its own behind and
+/// they would otherwise accumulate in the user's settings forever. Deleting
+/// them at the *start* of a later run is the one point at which it is safe,
+/// because the shell no longer holds them.
 ///
-/// This is the one place deletion is correct. Doing it on exit is what kills a
-/// batch of identities permanently, because the shell goes on recognizing them
-/// and never writes their entries again.
+/// Ours are recognized by the `IconGuid` the shell recorded against each
+/// entry, which is an identity this program minted and can prove.
 pub fn purge_orphans() -> usize {
     registry::notify_icon_keys()
         .into_iter()

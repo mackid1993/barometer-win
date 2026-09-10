@@ -15,7 +15,7 @@
 // and it is what keeps a stack's panel from ever being a second copy of a
 // module's, drifting from it a little each release.
 //
-// One divergence, on purpose. The Swift's picker offers the stack's source
+// Two divergences, on purpose. The Swift's picker offers the stack's source
 // *modules*; this one offers its *readings*, by the captions the strip
 // shows, because that is what the user sees in the column they clicked and
 // a reading is the thing they can name. Two readings from one module open
