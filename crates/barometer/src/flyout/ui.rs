@@ -45,6 +45,16 @@ pub const PLATE_RADIUS: f32 = 6.0;
 pub const FOOTER_H: f32 = 40.0;
 /// Tallest a panel grows before its content scrolls.
 pub const MAX_PANEL_H: f32 = 720.0;
+/// What a card says while a rate it shows has been sampled once and needs a
+/// second reading before there is a difference to divide.
+///
+/// The per-process figures on the processor and network panels are both
+/// rates, and both are collected only while a panel is open, so the moment
+/// after one opens is exactly when they have a baseline and nothing else.
+/// Drawing that as an empty list would say the machine is idle and drawing
+/// the previous session's numbers would be worse; a reading that has not
+/// arrived says so (AGENTS.md, Conventions).
+pub const MEASURING: &str = "Measuring the first interval";
 /// A section label's line, and the gap under it.
 pub const SECTION_LABEL_H: f32 = 16.0;
 pub const SECTION_GAP: f32 = 8.0;

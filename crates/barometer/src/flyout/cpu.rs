@@ -42,7 +42,7 @@ use barometer_core::modules::LoadAverage;
 use barometer_core::sys::processes;
 use barometer_core::ModuleId;
 
-use super::ui::{Accent, Builder, Graph, Id, Ink, Kind, Measure, Style};
+use super::ui::{Accent, Builder, Graph, Id, Ink, Kind, Measure, Style, MEASURING};
 use super::{Content, Context, Page, Response};
 use crate::settings_ui::gdi::Align;
 use crate::settings_ui::geometry::Rect;
@@ -368,6 +368,13 @@ pub struct CpuSnapshot {
     /// The processes using the most, busiest first: processes::Sample::
     /// top_by_cpu, mapped.
     pub top: Vec<ProcessLoad>,
+    /// Whether the per-process shares are being measured rather than
+    /// missing: a share is a difference between two reads of the processor
+    /// times, and the read taken when the panel opened has nothing to
+    /// difference against yet. An empty list would say the machine is idle,
+    /// which is not what is known - the rule is that a reading which has not
+    /// arrived is drawn as unavailable and never as a number.
+    pub measuring: bool,
     /// The busy fraction at each sample of the last day, oldest first, kept
     /// with `remember`. The picker chooses how much of it the graph shows.
     pub history: Vec<Sample>,
@@ -515,6 +522,13 @@ impl CpuFlyout {
             for (index, process) in self.shown_processes().enumerate() {
                 process_row(b, index as u32, process, accent);
             }
+            b.card_end(card);
+        } else if self.show_processes && s.measuring {
+            // The card is kept, with a sentence in place of the rows, so
+            // that the panel does not grow a card a second after it opened.
+            let card = b.card_begin(None);
+            b.section_label("Top processes");
+            b.caption(MEASURING);
             b.card_end(card);
         }
     }
@@ -861,6 +875,7 @@ mod tests {
             top: (0..7)
                 .map(|n| ProcessLoad { pid: 1000 + n, name: format!("process{n}"), load: 0.3 - n as f32 * 0.03 })
                 .collect(),
+            measuring: false,
             history: samples(30, 1_000_000),
         }
     }
@@ -1049,6 +1064,18 @@ mod tests {
     fn the_processes_card_is_left_out_when_there_are_none_or_they_are_switched_off() {
         let mut flyout = CpuFlyout::new(full());
         flyout.snapshot.top.clear();
+        assert_eq!(cards(&layout(&flyout)).len(), 3);
+        // While the shares are being measured the card stays, with a
+        // sentence where the rows will be, so that the panel does not grow a
+        // card a second after it opened - and so that a list which is empty
+        // because there is no interval yet does not read as an idle machine.
+        flyout.snapshot.measuring = true;
+        let elements = layout(&flyout);
+        assert_eq!(cards(&elements).len(), 4);
+        assert!(elements.iter().any(|e| matches!(&e.kind, Kind::Wrapped { text, .. } if text == MEASURING)));
+        // Switched off it stays off, measuring or not: the card the user
+        // asked not to see is not a place to put a status line.
+        flyout.show_processes = false;
         assert_eq!(cards(&layout(&flyout)).len(), 3);
         let mut flyout = CpuFlyout::new(full());
         flyout.show_processes = false;

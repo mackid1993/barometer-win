@@ -25,7 +25,10 @@ use barometer_core::ModuleId;
 
 use super::clipboard;
 use super::cpu::{icons, latest, process_mark};
-use super::ui::{Accent, Builder, Graph, Id, Ink, Kind, Measure, Style, Tile, TileIcon, ROW_H, TILE_GAP, TILE_H};
+use super::ui::{
+    Accent, Builder, Graph, Id, Ink, Kind, Measure, Style, Tile, TileIcon, MEASURING, ROW_H,
+    TILE_GAP, TILE_H,
+};
 use super::{Content, Context, Page, Response};
 use crate::settings_ui::gdi::Align;
 use crate::settings_ui::geometry::Rect;
@@ -132,6 +135,13 @@ pub struct NetworkSnapshot {
     /// None while per-process activity is not collected on this machine,
     /// which the Mac distinguishes from a list that happens to be empty.
     pub processes: Option<Vec<Process>>,
+    /// Whether an empty list means the rates are still being measured rather
+    /// than that nothing sent anything. A process's bytes a second is the
+    /// difference between two reads of every connection's counters, and the
+    /// read taken when the panel opened has nothing to difference against -
+    /// the accounting is switched on with the panel and off with it, so this
+    /// is the state every open starts in.
+    pub measuring: bool,
     pub connection: Connection,
     pub wifi: Option<Wifi>,
 }
@@ -147,6 +157,7 @@ impl Default for NetworkSnapshot {
             shows_processes: true,
             process_limit: 5,
             processes: None,
+            measuring: false,
             connection: Connection::default(),
             wifi: None,
         }
@@ -298,6 +309,10 @@ impl NetworkFlyout {
             b.section_label("Top network activity");
             match &s.processes {
                 None => b.caption("Per-process activity unavailable"),
+                // Measuring first: an empty list a second after the panel
+                // opened is the accounting having no interval yet, not a
+                // quiet machine, and the two must not read alike.
+                Some(processes) if processes.is_empty() && s.measuring => b.caption(MEASURING),
                 Some(processes) if processes.is_empty() => b.caption("No recent network activity"),
                 Some(processes) => {
                     for process in processes.iter().take(s.process_limit) {
@@ -774,6 +789,15 @@ mod tests {
         assert!(texts(&laid_out(&snapshot)).contains(&"Per-process activity unavailable"));
         snapshot.processes = Some(Vec::new());
         assert!(texts(&laid_out(&snapshot)).contains(&"No recent network activity"));
+        // The same empty list a second after the panel opened is the
+        // accounting having no interval to divide by yet, and saying the
+        // machine was quiet would be inventing a reading.
+        snapshot.measuring = true;
+        let elements = laid_out(&snapshot);
+        let words = texts(&elements);
+        assert!(words.contains(&MEASURING));
+        assert!(!words.contains(&"No recent network activity"));
+        snapshot.measuring = false;
         snapshot.processes = Some((0..7).map(|i| Process { pid: 0, name: format!("app{i}"), down: 1024.0, up: 0.0 }).collect());
         let elements = laid_out(&snapshot);
         let words = texts(&elements);

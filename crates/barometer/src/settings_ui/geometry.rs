@@ -98,6 +98,23 @@ pub fn to_dip(px: i32, scale: f32) -> f32 {
     px as f32 / scale
 }
 
+/// A DIP offset held to a whole device pixel.
+///
+/// For offsets that move a whole picture: a page's scroll, a chart's
+/// sideways position. Every element converts itself to pixels on its own,
+/// edge by edge, through `to_px`'s round - so an offset carrying a fraction
+/// rounds each element independently, and two rows an exact distance apart
+/// in DIPs land 21 pixels apart on one frame and 22 on the next. Measured on
+/// a card's caption and the value under it: the gap alternates on every
+/// frame of an overscroll's spring-back, and on every wheel notch from a
+/// touchpad, whose deltas are fractions of a notch rather than whole ones.
+/// Snapped once, before anything is offset by it, the whole picture moves by
+/// a whole number of pixels and nothing inside it can move against anything
+/// else.
+pub fn snap_dip(dip: f32, scale: f32) -> f32 {
+    (dip * scale).round() / scale
+}
+
 /// A one-DIP stroke in device pixels: one pixel up to 150%, two from 200%.
 ///
 /// The design document's rule (section 9.8). At 150% a 1.5-pixel line drawn
@@ -147,6 +164,39 @@ mod tests {
         let a = Rect::new(0.0, 0.0, 10.0, 10.0);
         assert!(a.intersects(&Rect::new(5.0, 5.0, 10.0, 10.0)));
         assert!(!a.intersects(&Rect::new(10.0, 0.0, 10.0, 10.0)));
+    }
+
+    #[test]
+    fn a_snapped_offset_moves_every_row_of_a_card_by_the_same_whole_pixels() {
+        // The measurement this exists for. A caption at 112 DIP with its
+        // value 21.5 below it, shifted by a touchpad's fractional notches:
+        // unsnapped the gap between them alternates between 21 and 22
+        // pixels from frame to frame, which is the shimmer. Snapped, the
+        // gap is whatever it is and it never changes.
+        let (caption, value) = (112.0f32, 133.5f32);
+        let mut gaps = Vec::new();
+        let mut raw_gaps = Vec::new();
+        let mut offset = 0.0f32;
+        for delta in [-7.0f32, -13.0, -9.0, -11.0, -8.0, -14.0, -6.0, -12.0] {
+            offset += delta / 120.0 * 48.0;
+            let snapped = snap_dip(offset, 1.0);
+            gaps.push(to_px(value + snapped, 1.0) - to_px(caption + snapped, 1.0));
+            raw_gaps.push(to_px(value + offset, 1.0) - to_px(caption + offset, 1.0));
+        }
+        assert!(gaps.windows(2).all(|pair| pair[0] == pair[1]), "the gap breathed: {gaps:?}");
+        assert!(raw_gaps.windows(2).any(|pair| pair[0] != pair[1]), "nothing to fix: {raw_gaps:?}");
+    }
+
+    #[test]
+    fn snapping_lands_on_whole_pixels_at_every_scale_and_keeps_the_sign() {
+        for scale in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
+            for dip in [-37.4f32, -0.2, 0.0, 3.2, 48.0, 121.9] {
+                let snapped = snap_dip(dip, scale);
+                let pixels = snapped * scale;
+                assert!((pixels - pixels.round()).abs() < 1e-3, "{dip} at {scale} gave {pixels}px");
+                assert!((snapped - dip).abs() <= 0.5 / scale + 1e-3, "{dip} at {scale} moved to {snapped}");
+            }
+        }
     }
 
     #[test]

@@ -39,6 +39,14 @@ use barometer_core::{Module, Readout};
 /// visible, slow enough to stay invisible in a CPU graph.
 const INTERVAL: Duration = Duration::from_secs(1);
 
+/// How often the two expensive walks run while a panel is open: every
+/// process, and every established TCP connection.
+///
+/// Named because the panel-opened wake winds both of them forward by it, and
+/// a cadence that is written down in three places drifts apart in two of
+/// them.
+const WALK_EVERY: Duration = Duration::from_secs(2);
+
 /// Owns the session-wide strip mutex for the life of the process.
 struct StripInstance(windows_sys::Win32::Foundation::HANDLE);
 
@@ -861,6 +869,10 @@ The file it could not read has been kept, at:
     // do not change between one tick and the next.
     let mut traffic = barometer_core::netinfo::TrafficSampler::new();
     let mut traffic_rates: Vec<barometer_core::netinfo::ProcessRate> = Vec::new();
+    // Whether the traffic sampler has produced a difference yet, as against
+    // having only its baseline. An empty list means two different things
+    // either side of this, and the panel has to be told which.
+    let mut traffic_measured = false;
     let mut traffic_at = Instant::now() - Duration::from_secs(10);
     let mut connection_at = Instant::now() - Duration::from_secs(10);
     // The public address, looked up on a thread of its own when the user
@@ -984,6 +996,30 @@ The file it could not read has been kept, at:
         if window::take_tray_changed() {
             follow_until = Some(Instant::now() + FOLLOW_FOR);
         }
+        // A panel opened. Most of what it shows is gathered only while one
+        // is - the history graphs, the per-process lists, the GPU's engines,
+        // the disks' volumes and devices - so the snapshot it built its first
+        // page from was written by a tick that skipped every one of them, and
+        // this loop is otherwise asleep on its queue until the next second
+        // falls due. That is up to a second of a panel showing its chrome
+        // with nothing in it, which is the whole of what the wake is for.
+        if window::take_panel_opened() {
+            next_sample = Instant::now();
+            // Two of those fields are rates, and a rate is a difference
+            // between two reads. Their baselines are taken here rather than
+            // left to the pass that wants them, and both walks are wound
+            // forward to fall due one interval from now - so the panel has a
+            // difference over about a second, instead of over the two each
+            // walk otherwise waits out before it even starts.
+            process_sample = processes.sample();
+            processes_at = Instant::now() - (WALK_EVERY - INTERVAL);
+            let _ = traffic.sample();
+            traffic_at = Instant::now() - (WALK_EVERY - INTERVAL);
+            traffic_measured = false;
+            if trace::on() {
+                trace::line("panel opened: sampling now");
+            }
+        }
         let mut follow = false;
         if let Some(until) = follow_until {
             if Instant::now() >= until {
@@ -1100,19 +1136,13 @@ The file it could not read has been kept, at:
                 // Every two seconds, and only while a panel that shows
                 // processes could be looking - the walk is the most expensive
                 // thing this loop does.
-                if flyout.is_open() && processes_at.elapsed() >= Duration::from_secs(2) {
+                if flyout.is_open() && processes_at.elapsed() >= WALK_EVERY {
                     processes_at = Instant::now();
                     process_sample = processes.sample();
                 }
                 // Asked once and reused: it decides whether several of the
                 // panels' more expensive fields are worth building at all.
                 let panels_open = flyout.is_open();
-                if panels_open && !panels_were_open {
-                    // A panel has just been opened. Sample now rather than at
-                    // the top of the next second, so its graph is filled in
-                    // by the time the fade finishes.
-                    next_sample = Instant::now();
-                }
                 if panels_were_open && !panels_open {
                     // The last panel has closed. The per-process figures are
                     // gathered by asking the kernel to keep extended
@@ -1122,6 +1152,19 @@ The file it could not read has been kept, at:
                     // several hundred sockets would go on being accounted for
                     // long after the panel that wanted them was gone.
                     barometer_core::netinfo::stop_collecting();
+                    // The baselines go with the accounting. Both samplers
+                    // difference against their previous read, and once the
+                    // panel is down that read is however long ago it was
+                    // last up - so a reopen would divide a whole afternoon's
+                    // bytes by that afternoon, and hand every process the
+                    // share of the machine it averaged over it. Both are
+                    // plausible-looking numbers and neither is a reading of
+                    // now, which is the worse failure of the two.
+                    processes = barometer_core::sys::processes::Sampler::new();
+                    process_sample = None;
+                    traffic = barometer_core::netinfo::TrafficSampler::new();
+                    traffic_rates = Vec::new();
+                    traffic_measured = false;
                 }
                 panels_were_open = panels_open;
                 let summary = if flyout.is_open() {
@@ -1162,7 +1205,7 @@ The file it could not read has been kept, at:
                                         .collect()
                                 })
                                 .unwrap_or_default();
-                            let top = process_sample
+                            let top: Vec<cpu::ProcessLoad> = process_sample
                                 .as_ref()
                                 .map(|s| {
                                     s.top_by_cpu(12)
@@ -1175,6 +1218,15 @@ The file it could not read has been kept, at:
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            // `top_by_cpu` keeps only the processes that have
+                            // a share, and a share needs two reads of the
+                            // processor times - so an empty list while a
+                            // panel is open is the walk having taken its
+                            // baseline and nothing more. There is no second
+                            // reading of an empty list: once there is an
+                            // interval, every process has a share, zero
+                            // included.
+                            let measuring = panels_open && top.is_empty();
                             let split = module.cpu_split();
                             cpu_feed.publish(cpu::CpuSnapshot {
                                 total,
@@ -1188,6 +1240,7 @@ The file it could not read has been kept, at:
                                 threads: summary.as_ref().map(|s| s.threads),
                                 handles: summary.as_ref().map(|s| s.handles),
                                 top,
+                                measuring,
                                 history: history_for(panels_open, &cpu_history),
                             });
                         }
@@ -1383,10 +1436,11 @@ The file it could not read has been kept, at:
                                     network_snapshot.connection.public_ipv4 = None;
                                     network_snapshot.connection.public_ipv6 = None;
                                 }
-                                if traffic_at.elapsed() >= Duration::from_secs(2) {
+                                if traffic_at.elapsed() >= WALK_EVERY {
                                     traffic_at = Instant::now();
                                     if let Some(rates) = traffic.sample() {
                                         traffic_rates = rates;
+                                        traffic_measured = true;
                                     }
                                 }
                                 // Names from the process walk when there has
@@ -1395,6 +1449,7 @@ The file it could not read has been kept, at:
                                     .as_ref()
                                     .map(|s| s.processes.iter().map(|p| (p.pid, p.name.clone())).collect())
                                     .unwrap_or_default();
+                                network_snapshot.measuring = !traffic_measured;
                                 network_snapshot.processes = Some(
                                     traffic_rates
                                         .iter()

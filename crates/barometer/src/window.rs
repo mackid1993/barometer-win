@@ -41,7 +41,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     TrackPopupMenu, IDC_ARROW, MENUINFO, MF_OWNERDRAW, MF_SEPARATOR, MIM_BACKGROUND, MIM_STYLE, MSGF_MENU, WM_ENTERIDLE,
     MNS_NOCHECK, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DRAWITEM, WM_LBUTTONUP, WM_MEASUREITEM,
     WM_RBUTTONUP,
-    DestroyWindow, GetWindowLongPtrW, RegisterClassW, SetWindowLongPtrW,
+    DestroyWindow, GetWindowLongPtrW, PostMessageW, RegisterClassW, SetWindowLongPtrW,
     SetWindowPos, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, WM_APP,
     GetAncestor, GetDesktopWindow, GetWindow, GetWindowThreadProcessId, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, OBJID_WINDOW,
@@ -244,6 +244,10 @@ pub const CLASS_NAME: &str = "BarometerStrip";
 /// watches it. The strip climbs back to the top of the topmost band.
 pub const WM_RAISE: u32 = WM_APP + 1;
 
+/// Posted to the strip when a detail panel opens, from the panel's own
+/// thread. The main loop takes the flag and samples at once.
+pub const WM_PANEL_OPENED: u32 = WM_APP + 2;
+
 /// The strip, for the restack hook, which has no other way to find it.
 static STRIP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static RESTACK_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -255,9 +259,36 @@ static FOREGROUND_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// Set when a window inside the taskbar moved; the main loop takes it and
 /// pulls its next tick forward so the readout follows the tray at once.
 static TRAY_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set when a detail panel opened; the main loop takes it and samples at
+/// once. See `notify_panel_opened`.
+static PANEL_OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn take_tray_changed() -> bool {
     TRAY_CHANGED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+pub fn take_panel_opened() -> bool {
+    PANEL_OPENED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// Tells the sampling loop that a panel is showing, from the panel's thread.
+///
+/// Several of the panels' fields are gathered only while one is open - the
+/// history graphs, the per-process lists, the GPU's engines, the disks'
+/// volumes - so the slot a panel builds its first page from was last written
+/// on a tick that skipped all of them. Without this the loop is asleep in
+/// `MsgWaitForMultipleObjects` until its next second is due, and the panel
+/// shows its chrome with nothing in it for up to that long. Posted rather
+/// than written straight to the flag because the loop is waiting on its
+/// message queue: setting a flag it is not awake to read would change
+/// nothing.
+pub fn notify_panel_opened() {
+    let strip = STRIP.load(std::sync::atomic::Ordering::Acquire) as HWND;
+    if !strip.is_null() {
+        // SAFETY: a handle the strip published and clears on WM_DESTROY;
+        // posting to a window that has since gone is harmless.
+        unsafe { PostMessageW(strip, WM_PANEL_OPENED, 0, 0) };
+    }
 }
 
 /// Whether the taskbar is stacked above the strip.
@@ -1304,6 +1335,12 @@ unsafe extern "system" fn window_proc(
                 0,
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
             );
+            0
+        }
+        // A panel opened. Nothing is done here but the flag: the loop that
+        // reads it is the one that samples, and it is right below.
+        WM_PANEL_OPENED => {
+            PANEL_OPENED.store(true, std::sync::atomic::Ordering::Release);
             0
         }
         // The taskbar's own light-or-dark switch, which decides the ink.

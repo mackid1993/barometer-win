@@ -44,7 +44,7 @@ use windows_sys::Win32::Graphics::GdiPlus::{
 
 use super::ui::{Accent, Element, Graph, Id, Ink, Kind, Palette, Style, CARD_RADIUS, PLATE_RADIUS};
 use crate::settings_ui::gdi::{wide, Align, Canvas, Face};
-use crate::settings_ui::geometry::{hairline_px, Rect};
+use crate::settings_ui::geometry::{hairline_px, snap_dip, Rect};
 use crate::settings_ui::theme::{Color, BLACK, BRAND_GROUND, WHITE};
 use crate::settings_ui::ui::scroll_thumb;
 
@@ -812,7 +812,14 @@ pub fn draw(surface: &mut Surface, elements: &[Element], hover: Option<Id>, pres
                 // Clipped to the plate: the picture is drawn at its full
                 // width, shifted, and the plate shows the part under it.
                 let clip = surface.clip(rect);
-                painter.paint(surface, Rect::new(rect.x - offset, rect.y, *content_w, rect.h), is_hover);
+                // Snapped for the reason the page's own offset is: a drag
+                // lands the chart on fractional DIPs, and the hour labels
+                // are drawn in whole pixels while the plot behind them is
+                // not, so unsnapped they walk against each other by a pixel
+                // as the chart moves. The thumb below keeps the true offset:
+                // it says where in the chart we are, not where it is drawn.
+                let shift = snap_dip(*offset, surface.scale());
+                painter.paint(surface, Rect::new(rect.x - shift, rect.y, *content_w, rect.h), is_hover);
                 if let Some((x, w)) = scroll_thumb(rect.w, *content_w, *offset) {
                     // A thumb along the plate's bottom edge, like the panel's
                     // own down its right: a plate with more to its right has

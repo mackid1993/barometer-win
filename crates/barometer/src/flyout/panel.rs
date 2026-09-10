@@ -73,7 +73,7 @@ use super::{
     WM_APP_CLOSE, WM_APP_OPEN, WM_APP_QUIT, WM_APP_REGISTER,
 };
 use crate::settings_ui::gdi::{wide_nul, Canvas, FontCache};
-use crate::settings_ui::geometry::{to_px, PxRect, Rect};
+use crate::settings_ui::geometry::{snap_dip, to_px, PxRect, Rect};
 use crate::settings_ui::system;
 use crate::settings_ui::ui::{clamp_scroll, scroll_thumb};
 
@@ -343,6 +343,19 @@ impl Panel {
         Rect::new(0.0, 0.0, w, (h - FOOTER_H).max(0.0))
     }
 
+    /// How far the page is shifted as it is drawn, in DIPs, snapped to a
+    /// whole device pixel.
+    ///
+    /// The one place the scroll and the stretch are added together, and the
+    /// only offset anything is allowed to move by: the drawing, the hit
+    /// testing and the search for the picture under the pointer all take it
+    /// from here. Snapping it in one of those and not the others would put
+    /// the hit map up to half a pixel off the pixels it is answering for -
+    /// see `snap_dip` for why it is snapped at all.
+    fn drawn_offset(&self) -> f32 {
+        snap_dip(self.scroll - self.stretch, self.scale())
+    }
+
     fn invalidate(&self) {
         // SAFETY: a live window.
         unsafe { InvalidateRect(self.hwnd, std::ptr::null(), 0) };
@@ -578,6 +591,11 @@ impl Panel {
         if let Ok(mut item) = self.shared.open_item.lock() {
             *item = Some(request.item);
         }
+        // After the flag, never before: the loop this wakes reads the flag
+        // to decide whether the expensive fields are worth gathering, and
+        // waking it while `open` was still false would spend the pass and
+        // publish another page with nothing in it.
+        crate::window::notify_panel_opened();
         self.invalidate();
     }
 
@@ -735,7 +753,14 @@ impl Panel {
         // SAFETY: the DC from GetDC above.
         unsafe { ReleaseDC(self.hwnd, dc) };
         let viewport_h = self.viewport().h;
-        self.scroll = clamp_scroll(self.scroll, viewport_h, page.height);
+        let (scroll, held) = resettled(self.scroll, viewport_h, page.height);
+        self.scroll = scroll;
+        if held != 0.0 {
+            // Handed to the spring rather than applied, so the page holds
+            // still and eases: see `resettled`.
+            self.stretch = (self.stretch + held).clamp(-STRETCH_MAX, STRETCH_MAX);
+            self.start_stretch_timer();
+        }
         let mut content = page.elements;
         settle_scrollers(&mut content, &mut self.hscroll);
         self.layout = Some(Layout { content, content_h: page.height, footer });
@@ -748,7 +773,7 @@ impl Panel {
         if !self.viewport().contains(x, y) {
             return None;
         }
-        ui::scroll_at(&layout.content, x, y + self.scroll - self.stretch)
+        ui::scroll_at(&layout.content, x, y + self.drawn_offset())
     }
 
     /// Moves the picture with `id` to an offset, and repaints if it moved.
@@ -785,7 +810,7 @@ impl Panel {
         if y >= footer_top {
             return ui::hit(&layout.footer, x, y - footer_top);
         }
-        ui::hit(&layout.content, x, y + self.scroll - self.stretch)
+        ui::hit(&layout.content, x, y + self.drawn_offset())
     }
 
     // ---- painting -------------------------------------------------------
@@ -827,7 +852,7 @@ impl Panel {
         let (width, height) = self.client();
         let viewport = self.viewport();
         let accent = self.accent();
-        let (hover, pressed, scroll) = (self.hover, self.pressed, self.scroll - self.stretch);
+        let (hover, pressed, scroll) = (self.hover, self.pressed, self.drawn_offset());
         let Some(layout) = self.layout.as_ref() else { return };
         let palette = &self.palette;
         let mut canvas = Canvas::new(dc, scale, &mut self.fonts);
@@ -1179,6 +1204,40 @@ impl Fade {
     }
 }
 
+/// Where a rebuilt page sits, and how much of the reader's place the spring
+/// has to hold to get it there without a jump.
+///
+/// A feed publishing lays the whole page out again, once a second, and the
+/// page's height moves whenever a row comes or goes - the network panel's
+/// process list carries only the connections that moved bytes in that
+/// second, so its row count changes constantly. Clamping the old offset into
+/// the shorter page pulls a reader who was at its end up by exactly the row
+/// that went, every second, which is the page being yanked out from under
+/// them.
+///
+/// The offset returned is the honest one - the page really is only that far
+/// down its new self, and the scrollbar thumb has to say so. The difference
+/// is returned separately, to be handed to the same overscroll spring the
+/// wheel pulls against: the page then holds exactly still at the instant of
+/// the rebuild and eases to its new place over the same fifth of a second.
+/// Nothing new animates. This is the give the page already had, spent on a
+/// rebuild rather than on a wheel.
+///
+/// Past `STRETCH_MAX` the page has not shifted, it has changed shape - a
+/// card arrived, a panel switched module - and there is no place worth
+/// keeping, so that clamps outright as it always did.
+fn resettled(scroll: f32, viewport_h: f32, content_h: f32) -> (f32, f32) {
+    let clamped = clamp_scroll(scroll, viewport_h, content_h);
+    // Positive is the top edge pulled down, which is the sign `stretch`
+    // uses; a page that shrank under a reader at its end gives a negative
+    // one, being held past the bottom.
+    let held = clamped - scroll;
+    match held.abs() <= STRETCH_MAX {
+        true => (clamped, held),
+        false => (clamped, 0.0),
+    }
+}
+
 /// Gives every sideways-scrolling picture in a fresh layout the offset it
 /// had before, held to what it can show now, or remembers the offset it was
 /// laid out with when it is new.
@@ -1432,6 +1491,42 @@ mod tests {
         }
         assert!(far < STRETCH_MAX, "{far} reached the asymptote");
         assert!(far > STRETCH_MAX * 0.9, "{far} never got near it");
+    }
+
+    #[test]
+    fn a_page_that_lost_a_row_under_a_reader_at_its_end_holds_still_and_eases() {
+        // The network panel, once a second: twelve process rows become
+        // eleven and the page is 28 DIP shorter. A reader at the end used to
+        // be pulled up by exactly that row.
+        let (viewport, tall, short) = (400.0f32, 900.0f32, 872.0f32);
+        let at_end = tall - viewport;
+        let (scroll, held) = resettled(at_end, viewport, short);
+        assert_eq!(scroll, short - viewport, "the offset has to be honest for the thumb");
+        assert_eq!(held, -28.0, "the row is held by the spring, not spent on the reader");
+        // Offset plus what the spring holds is where the page was drawn the
+        // frame before, which is what makes it a page that eases rather than
+        // one that jumps.
+        assert_eq!(scroll - held, at_end);
+    }
+
+    #[test]
+    fn a_page_whose_shape_changed_rather_than_shifted_clamps_as_it_always_did() {
+        // A whole card arriving or going is not a place worth keeping, and
+        // a spring wound that far would take a visible age to unwind.
+        let viewport = 400.0f32;
+        let (scroll, held) = resettled(900.0 - viewport, viewport, 900.0 - STRETCH_MAX * 2.0);
+        assert_eq!(scroll, 900.0 - STRETCH_MAX * 2.0 - viewport);
+        assert_eq!(held, 0.0, "no spring for a page that changed shape");
+    }
+
+    #[test]
+    fn a_page_that_did_not_move_asks_nothing_of_the_spring() {
+        // The ordinary tick: the numbers changed and the height did not.
+        let (scroll, held) = resettled(240.0, 400.0, 900.0);
+        assert_eq!((scroll, held), (240.0, 0.0));
+        // And a page that grew under a reader in the middle leaves them
+        // exactly where they were reading.
+        assert_eq!(resettled(240.0, 400.0, 1200.0), (240.0, 0.0));
     }
 
     #[test]
