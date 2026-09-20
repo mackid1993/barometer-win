@@ -43,6 +43,17 @@ on GitHub and each updates itself from its own.
 
 There is no account, no subscription and no telemetry.
 
+## Screenshots
+
+<p align="center">
+  <a href="docs/screenshots/sensors.png"><img src="docs/screenshots/sensors.png" width="48%" alt="Barometer Sensors flyout showing CPU temperature readings above the Windows notification area"></a>
+  <a href="docs/screenshots/memory.png"><img src="docs/screenshots/memory.png" width="48%" alt="Barometer Memory flyout showing memory composition, commit history, and generalized process names"></a>
+</p>
+<p align="center">
+  <a href="docs/screenshots/weather.png"><img src="docs/screenshots/weather.png" width="48%" alt="Barometer Weather flyout showing current conditions, hourly weather, and the ten-day forecast"></a>
+</p>
+<p align="center"><sub>Captured from the native Windows UI. Location and process labels were generalized for privacy.</sub></p>
+
 ## What it shows
 
 Seven modules. Each can be on the strip or off it, in whatever order you drag them into,
