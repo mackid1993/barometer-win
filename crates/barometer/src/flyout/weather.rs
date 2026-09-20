@@ -29,7 +29,6 @@ pub mod sky;
 
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use barometer_core::weather::air::{self, fetch_air, AirQuality};
 use barometer_core::weather::badge::Condition;
@@ -129,6 +128,9 @@ pub struct Snapshot {
     pub locations: Vec<Location>,
     pub units: WeatherUnits,
     pub current: Option<CurrentWeather>,
+    /// Wall-clock time of the strip's last successful current-conditions
+    /// fetch, even when the returned values did not change.
+    pub refreshed_at_unix: Option<i64>,
     /// Why the strip's last refresh failed, if it did.
     pub error: Option<String>,
     /// How often the strip refreshes, which is how long a forecast is
@@ -157,14 +159,14 @@ type FetchResult = Option<(u64, String, Result<DetailForecast, String>, Option<A
 pub struct WeatherContent {
     feed: Arc<Mutex<Snapshot>>,
     snapshot: Snapshot,
-    /// When the strip's reading last changed, as seconds since the epoch.
+    /// When the strip's reading was last refreshed, as seconds since the epoch.
     current_since: Option<i64>,
     forecast: Option<DetailForecast>,
     /// The air at the same place, when the air-quality service answered.
     air: Option<AirQuality>,
     /// The id of the location the forecast is for.
     forecast_for: Option<String>,
-    fetched_at: Option<Instant>,
+    fetched_at_unix: Option<i64>,
     fetch_error: Option<String>,
     fetching: bool,
     /// Counts fetches, so a slow answer to an old request cannot replace a
@@ -189,7 +191,7 @@ impl WeatherContent {
             forecast: None,
             air: None,
             forecast_for: None,
-            fetched_at: None,
+            fetched_at_unix: None,
             fetch_error: None,
             fetching: false,
             generation: 0,
@@ -209,7 +211,11 @@ impl WeatherContent {
         if latest == self.snapshot {
             return false;
         }
-        if latest.current != self.snapshot.current {
+        if latest.refreshed_at_unix != self.snapshot.refreshed_at_unix {
+            self.current_since = latest.refreshed_at_unix;
+        } else if latest.current != self.snapshot.current {
+            // A compatibility fallback for a snapshot made without a fetch
+            // timestamp. Production snapshots carry one after every success.
             self.current_since = Some(clock::unix_now());
         }
         self.snapshot = latest;
@@ -225,8 +231,9 @@ impl WeatherContent {
         if self.forecast_for.as_deref() != Some(location.id.as_str()) {
             return true;
         }
-        let minutes = u64::from(self.snapshot.refresh_minutes.clamp(5, 60));
-        self.fetched_at.is_none_or(|at| at.elapsed() > Duration::from_secs(minutes * 60))
+        let seconds = i64::from(self.snapshot.refresh_minutes.clamp(5, 60)) * 60;
+        let now = clock::unix_now();
+        self.fetched_at_unix.is_none_or(|at| at > now || now - at > seconds)
     }
 
     /// Starts a fetch if one is wanted and none is running.
@@ -283,7 +290,7 @@ impl WeatherContent {
                 self.forecast = Some(forecast);
                 self.air = air;
                 self.forecast_for = showing;
-                self.fetched_at = Some(Instant::now());
+                self.fetched_at_unix = Some(clock::unix_now());
                 self.fetch_error = None;
             }
             Err(why) => self.fetch_error = Some(why),
@@ -1331,6 +1338,7 @@ mod tests {
                 weather_code: Some(2),
                 is_day: true,
             }),
+            refreshed_at_unix: Some(now() - 5 * 60),
             error: None,
             refresh_minutes: 15,
         }
@@ -1498,6 +1506,22 @@ mod tests {
         if let Kind::Text { text, .. } = &updated.kind {
             assert_eq!(text, "Updated 2:25 PM \u{00B7} 5 min ago");
         }
+    }
+
+    #[test]
+    fn a_successful_refresh_updates_the_time_even_when_the_conditions_are_unchanged() {
+        let mut first = snapshot();
+        first.refreshed_at_unix = Some(now() - 9 * 24 * 60 * 60);
+        let feed = Arc::new(Mutex::new(first.clone()));
+        let mut content = WeatherContent::new(Arc::clone(&feed));
+        assert!(content.sync_snapshot());
+        assert_eq!(content.current_since, first.refreshed_at_unix);
+
+        let mut refreshed = first;
+        refreshed.refreshed_at_unix = Some(now());
+        *feed.lock().unwrap() = refreshed;
+        assert!(content.sync_snapshot());
+        assert_eq!(content.current_since, Some(now()));
     }
 
     #[test]
@@ -1673,12 +1697,12 @@ mod tests {
     fn the_forecast_is_stale_for_another_place_and_after_the_refresh_interval() {
         let mut content = content(snapshot(), Some(forecast()));
         content.forecast_for = Some("austin".into());
-        content.fetched_at = Some(Instant::now());
+        content.fetched_at_unix = Some(clock::unix_now());
         assert!(!content.stale());
         content.forecast_for = Some("elsewhere".into());
         assert!(content.stale());
         content.forecast_for = Some("austin".into());
-        content.fetched_at = Some(Instant::now() - Duration::from_secs(16 * 60));
+        content.fetched_at_unix = Some(clock::unix_now() - 16 * 60);
         assert!(content.stale());
     }
 

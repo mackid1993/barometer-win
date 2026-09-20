@@ -19,7 +19,7 @@
 // The readout itself lives in barometer-app. This package is the executable
 // and nothing else; see its Cargo.toml for why the two are separate.
 use barometer_app::{
-    lhm_install, pawnio, reserve, settings_ui, spacer, trace, tray, update, window,
+    lhm_install, pawnio, reserve, settings_ui, spacer, startup, trace, tray, update, window,
 };
 
 use std::env;
@@ -46,6 +46,9 @@ const INTERVAL: Duration = Duration::from_secs(1);
 /// a cadence that is written down in three places drifts apart in two of
 /// them.
 const WALK_EVERY: Duration = Duration::from_secs(2);
+
+/// How long a sign-in launch waits for Explorer to put up the taskbar.
+const TASKBAR_WAIT: Duration = Duration::from_secs(120);
 
 /// Owns the session-wide strip mutex for the life of the process.
 struct StripInstance(windows_sys::Win32::Foundation::HANDLE);
@@ -473,6 +476,10 @@ fn main() {
         return;
     }
 
+    if env::args().any(|a| a == "--enable-startup") {
+        std::process::exit(if startup::set(true) { 0 } else { 1 });
+    }
+
     if env::args().any(|a| a == "--weather") {
         run_weather_probe();
         return;
@@ -497,6 +504,11 @@ fn main() {
         Box::new(sensors_module()),
         Box::new(WeatherModule::new(Default::default())),
     ];
+    if console_mode {
+        if let Some(weather) = modules.iter_mut().find(|module| module.id() == barometer_core::ModuleId::Weather) {
+            weather.shown(true);
+        }
+    }
 
     // The strip cannot exist on a side edge, so the app says why and leaves
     // rather than running invisibly.
@@ -649,7 +661,11 @@ Cancel - skip this release",
     };
     match answer {
         IDYES => {
-            open_url(&format!("https://github.com/{}/{}/releases", update::OWNER, update::REPOSITORY));
+            settings_ui::system::open_url(&format!(
+                "https://github.com/{}/{}/releases",
+                update::OWNER,
+                update::REPOSITORY
+            ));
             None
         }
         IDCANCEL => Some(Some(version)),
@@ -657,45 +673,27 @@ Cancel - skip this release",
     }
 }
 
-/// Opens a page in whatever the user's browser is.
-fn open_url(url: &str) {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let wide = |text: &str| -> Vec<u16> {
-        std::ffi::OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect()
-    };
-    // SAFETY: NUL-terminated strings; the returned pseudo-handle is not a
-    // resource and is deliberately dropped.
-    unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            wide("open").as_ptr(),
-            wide(url).as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL as i32,
-        );
-    }
-}
 
 /// Whether anything the user has switched on actually wants a temperature.
 ///
 /// The Sensors column is the obvious one, but a sensor reading put into a
 /// stack wants the driver just as much and can be the only thing that does.
 fn wants_temperatures(settings: &barometer_core::store::Settings) -> bool {
-    use barometer_core::ModuleId;
+    wants_module(settings, barometer_core::ModuleId::Sensors)
+}
+
+/// Whether an enabled column or stack can show a module's reading.
+fn wants_module(settings: &barometer_core::store::Settings, wanted: barometer_core::ModuleId) -> bool {
     let column = settings
         .modules
         .iter()
-        .any(|entry| entry.id == ModuleId::Sensors && entry.enabled);
+        .any(|entry| entry.id == wanted && entry.enabled);
     let in_a_stack = settings.stacks.stacks.iter().any(|stack| {
         stack.is_enabled
             && stack
                 .metrics
                 .iter()
-                .any(|entry| entry.metric.module() == ModuleId::Sensors)
+                .any(|entry| entry.metric.module() == wanted)
     });
     column || in_a_stack
 }
@@ -713,12 +711,25 @@ fn run_strip(mut modules: Vec<Box<dyn Module>>) {
         PM_REMOVE, QS_ALLINPUT, WM_QUIT,
     };
 
-    let Some(mut strip) = window::Strip::create() else {
+    // Opened before the strip exists, not after: a launch that never finds
+    // the taskbar is exactly the one that needs to have left a line behind.
+    trace::opened();
+
+    // At sign-in the logon task starts Barometer alongside Explorer, and
+    // usually ahead of it. Two minutes is the allowance for a slow disk with
+    // a long startup list; a sign-in whose taskbar takes longer than that has
+    // bigger problems than a missing readout.
+    if !window::wait_for_taskbar(TASKBAR_WAIT) {
+        trace::line(&format!("no taskbar after {TASKBAR_WAIT:?}; giving up"));
         eprintln!("Could not find the taskbar. Explorer may be restarting.");
         return;
-    };
+    }
 
-    trace::opened();
+    let Some(mut strip) = window::Strip::create() else {
+        trace::line("the taskbar is there but the strip could not be made");
+        eprintln!("Could not attach to the taskbar.");
+        return;
+    };
 
     // Whatever the user last chose. A corrupt file is reported and defaults
     // are used; it is never silently overwritten - the store renames it aside
@@ -1036,6 +1047,20 @@ The file it could not read has been kept, at:
                 trace::line("panel opened: sampling now");
             }
         }
+        // Windows' relative waits do not count time in sleep or hibernation.
+        // Wake the weather worker explicitly, rather than leaving most of its
+        // old refresh interval still to run after a days-long suspend.
+        if window::take_power_resumed() {
+            if let Some(weather) =
+                modules.iter_mut().find(|module| module.id() == barometer_core::ModuleId::Weather)
+            {
+                weather.refresh();
+            }
+            next_sample = Instant::now();
+            if trace::on() {
+                trace::line("system resumed: refreshing weather now");
+            }
+        }
         let mut follow = false;
         if let Some(until) = follow_until {
             if Instant::now() >= until {
@@ -1205,6 +1230,7 @@ The file it could not read has been kept, at:
                                     locations: settings.weather.locations.clone(),
                                     units: observed.units,
                                     current: observed.current,
+                                    refreshed_at_unix: observed.refreshed_at_unix,
                                     error: observed.error,
                                     refresh_minutes: observed.refresh_minutes,
                                 });
@@ -2177,5 +2203,8 @@ fn run_repair() {
 fn apply_to_modules(modules: &mut [Box<dyn Module>], settings: &barometer_core::store::Settings) {
     for module in modules.iter_mut() {
         module.configure(settings);
+        if module.id() == barometer_core::ModuleId::Weather {
+            module.shown(wants_module(settings, barometer_core::ModuleId::Weather));
+        }
     }
 }

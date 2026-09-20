@@ -51,7 +51,7 @@ nothing else; the rest are switched on as you want them.
 
 | Module | On the strip | In its panel |
 | --- | --- | --- |
-| **Processor** | `CPU` over the total load | A history graph from 1 minute to 24 hours, the user/system/idle split, every core as a bar with performance and efficiency cores labeled, load averages, uptime, process, thread and handle counts, and the busiest processes with an end-task button |
+| **Processor** | `CPU` over the total load | A history graph from 1 minute to 24 hours, the user/system/idle split, every core as a bar with performance and efficiency cores labeled, load averages, uptime, process, thread and handle counts, and the busiest processes |
 | **Graphics** | `GPU` over the busiest engine's load | A history graph, every engine type's share, memory in use against dedicated, and frequency, power and temperature when a sensor source reports them |
 | **Memory** | `MEM` over the percentage in use | A breakdown of in use, modified, standby and free, commit charge with its own graph and a Normal/High/Critical state, page file, pools, and the largest processes by working set |
 | **Disks** | The read rate over the write rate | A mirrored read/write graph, every volume with a capacity bar and free space, and every physical disk with its model, rates and operations per second |
@@ -68,9 +68,9 @@ how you fit more on without making the strip longer.
 | --- | --- |
 | **Windows 11** | x64. Windows 10 is refused by the installer - see below |
 | **Taskbar on top or bottom** | A side-docked taskbar is refused with a message |
-| **Administrator** | Required. The installer registers a sign-in task, so only a manual launch prompts |
+| **Administrator account** | Required for prompt-free startup. An over-the-shoulder administrator can install it for a standard user, but the installer will not create or launch a task under the wrong account |
 | **A .NET runtime** | Not needed. The sensor helper carries its own |
-| **[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)** | Optional, for temperatures, fans and voltages. Barometer can fetch it for you, into your own AppData, and ships none of it |
+| **[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)** | Optional, for temperatures, fans and voltages. Barometer can fetch it into its protected Program Files directory and ships none of it |
 | **[PawnIO](https://pawnio.eu)** | Optional, for the processor's temperatures and the motherboard's fans, voltages and board temperatures. Graphics and drive temperatures arrive without it. Somebody else's signed driver, installed by you |
 | **Internet** | Only for what asks: the weather, your approximate location if you want it, and update checks |
 
@@ -100,7 +100,11 @@ operation. PawnIO, which does that reading, gives its device object an ACL that 
 only SYSTEM and the Administrators group, so an unelevated Barometer is refused outright.
 The installer registers a scheduled task that starts Barometer with highest privileges at
 sign-in, which is why sign-in is silent; the ordinary Windows startup list cannot start an
-elevated program at all.
+elevated program at all. Windows cannot create that prompt-free interactive task for a
+standard user's desktop by borrowing another administrator's credentials. In an
+over-the-shoulder UAC install, Barometer therefore withholds startup and post-install launch
+rather than binding either action to the wrong account; its in-app switch independently
+compares the elevated token with Explorer's user SID and refuses the same mismatch.
 
 Nothing else about the app needs elevation, and the sensors that have a path of their own -
 the graphics card, which vendor libraries report, and the drives, which answer SMART and
@@ -115,11 +119,12 @@ because the program does.
 
 Three tick boxes on the tasks page:
 
-- **Start Barometer when I sign in** - on by default. It registers a scheduled task named
-  `Barometer` that runs with highest privileges, is allowed to start on battery, is not
-  stopped when the machine goes onto battery, has no execution time limit, and ignores a
-  second instance. The same switch is on the General settings pane afterwards, where it
-  enables and disables that task rather than making a new one.
+- **Start Barometer when I sign in** - on by default when Setup is elevated from the same
+  administrator account that owns the desktop; otherwise it is withheld. It registers a
+  scheduled task named `Barometer` that runs with highest privileges, is allowed to start on
+  battery, is not stopped when the machine goes onto battery, has no execution time limit,
+  and ignores a second instance. The same switch is on the General settings pane afterwards,
+  where it disables the task or replaces it with that canonical definition.
 - **Create a desktop shortcut** - off by default.
 - **Open the PawnIO download page** - off by default, and deliberately: Barometer installs
   no driver and must not look like it is nudging one onto the machine. It opens
@@ -136,9 +141,9 @@ are preserved when an older version saves, so the two can share one file.
 **The sensor library is never shipped.** LibreHardwareMonitor is not in the binary and not
 in the installer. The Sensors settings pane offers to download it - about 9 MB, from
 LibreHardwareMonitor's own GitHub releases, pinned to a tag, an asset name, a size and a
-SHA-256 - into `%LOCALAPPDATA%\Barometer\LibreHardwareMonitor`. Nothing that arrives over
-the network chooses what is fetched, where it goes, or whether it is kept. You can also
-point Barometer at an installation of your own, including a portable copy.
+SHA-256 - into the protected Barometer directory under Program Files. Nothing that arrives
+over the network chooses what is fetched, where it goes, or whether it is kept. The elevated
+sensor helper refuses libraries from user-writable locations.
 
 **PawnIO you install yourself**, from its own site. Barometer contains no kernel driver and
 never will. It probes for the driver's device object and tells two answers apart: absent,
@@ -237,10 +242,9 @@ draws every logical processor as a labeled bar, with performance cores as `P1`, 
 efficiency cores as `E1`, `E2` where Windows reports the distinction. A **System** card gives
 the one, five and fifteen minute load averages (computed from the ready queue, the way the
 Unix kernel computes them, since Windows has no `getloadavg`), uptime, the process and thread
-counts, and the handle count. **Top processes** lists the five busiest with their real icons,
-a bar for each one's share of the whole machine, and an end-task glyph at the right of the
-row that terminates it with no confirmation - keyed by process id, so a list that re-sorted
-under your finger cannot kill the wrong thing.
+counts, and the handle count. **Top processes** lists the five busiest with their real icons
+and a bar for each one's share of the whole machine. The list is read-only; Barometer is a
+monitor, not a task manager.
 
 ### Graphics
 
@@ -262,7 +266,7 @@ memory-pressure figure, so the **Commit** card stands in for the Mac's: commit c
 its limit, graphed over the whole history held, with a state chip reading Normal, High at
 70%, or Critical at 90%, and rows for committed bytes, the page file, and the paged and
 non-paged pools. **Top processes** lists the five largest working sets with a bar for each
-one's share of installed memory. There is no end-task button here.
+one's share of installed memory.
 
 ### Disks
 
@@ -417,10 +421,9 @@ So Barometer orchestrates it rather than reimplementing or redistributing it:
   so a crashed Barometer cannot leave a process holding a driver handle.
 - The library itself is **fetched on request** from LibreHardwareMonitor's own GitHub
   releases, pinned to the tag, asset name, byte count and SHA-256 that were tested against
-  this helper, and unpacked into your local application data. It is never shipped, so no MPL
-  redistribution obligation is taken on and the installer stays small.
-- If you already have a copy - installed, or portable from a zip - the helper finds it in the
-  registry and in the usual places, or you can name the folder yourself.
+  this helper, and unpacked beside Barometer under Program Files. It is never shipped, so no
+  MPL redistribution obligation is taken on and the installer stays small. The elevated helper
+  accepts only this managed, ACL-protected directory and rejects portable user-writable copies.
 - [PawnIO](https://pawnio.eu) is the signed kernel driver LibreHardwareMonitor runs its
   hardware modules inside: `IntelMSR`, `AMDFamily17` and `RyzenSMU` for the processor, `LpcIO`
   for the SuperIO chip's fans and voltages, `LpcACPIEC` and `IsaBridgeEC` for embedded
@@ -443,10 +446,11 @@ search.
 
 **Finding you.** By default Barometer guesses your location from your internet address,
 through [ipapi.co](https://ipapi.co/) with [ipwho.is](https://ipwho.is/) as a fallback, asked
-no more than once per run. That is on by default here where it is off on macOS, because an
-address lookup raises no consent prompt and asks nothing of the machine. Turn it off and
-nothing is asked of anyone. Either way you can search for cities by name and keep as many as
-you like, one of them primary, switching between them from the panel's location chips.
+no more than once per run. No lookup is made while Weather is disabled and no enabled stack
+uses one of its readings. The location option is on by default here where it is off on macOS,
+because an address lookup raises no consent prompt and asks nothing of the machine. Turn it
+off and nothing is asked of anyone. Either way you can search for cities by name and keep as
+many as you like, one of them primary, switching between them from the panel's location chips.
 
 **Units** are four independent choices: temperature (Celsius or Fahrenheit, and it also
 decides whether visibility is in miles or kilometers), wind speed (km/h, mph, m/s or knots),
@@ -468,11 +472,9 @@ restarting the machine is not a way of asking again. A release you skip stays hi
 automatic check and is still reported by a check you asked for.
 
 **Nothing is installed without you.** When there is a newer release you are shown its version
-and its notes and choose. If you say yes, the installer is downloaded from the project's own
-releases over HTTPS and **verified against the SHA-256 GitHub itself published** before it is
-written anywhere it could be run from - a mismatch never reaches the disk. The URL is built
-from constants rather than taken from a response body, the hash comes from Windows' own
-BCrypt rather than from a dependency, and the comparison runs without an early exit.
+and its notes and choose. If you say yes, Barometer opens this repository's releases page in
+your browser; you download and run the installer yourself. The application never downloads or
+launches an executable on its own.
 
 ## Diagnostics
 
@@ -552,10 +554,10 @@ the result and prints the installer's SHA-256. `-SkipHelper`, `-SkipInstaller` a
 or add steps. It also refuses to ship a binary carrying the path it was built on;
 `scrub-check.ps1` is the same check against one binary at a time.
 
-`version.ps1` reads or sets the version in the one place it is defined, and `scripts\build.ps1`
-and the release workflow both go through it, so the installer, its filename and the
-executable's own version resource cannot drift apart - which matters, because the updater
-compares the running version against a release tag.
+`version.ps1` reads or sets the committed version in `Cargo.toml` and the installer fallback.
+The local build reads that value and CI requires its version input to match it, so the tag,
+installer filename and executable resource cannot drift apart - which matters because update
+checks compare the running version against a release tag.
 
 ## License
 

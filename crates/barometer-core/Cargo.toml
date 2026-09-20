@@ -25,9 +25,7 @@ windows-sys = { workspace = true, features = [
     # with no performance counter and no driver in the way.
     "Win32_System_SystemInformation",
     # GetSystemTimes is filed under Threading rather than SystemInformation,
-    # which is where you would look for it and where it is not. Also
-    # OpenProcess and TerminateProcess, for the end-task glyph on a process
-    # row.
+    # which is where you would look for it and where it is not.
     "Win32_System_Threading",
     # NtQuerySystemInformation, for the process list with every process's
     # kernel and user time in one call, and per-processor times beside it.

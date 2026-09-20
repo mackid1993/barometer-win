@@ -24,6 +24,9 @@ serde_json = "1"
 workspace = true
 features = [
     "Win32_Foundation",
+    # Compare the elevated process token with Explorer's interactive-user SID
+    # before creating a highest-run-level startup task.
+    "Win32_Security",
     # The window itself, its class, its message loop, and finding the taskbar
     # to attach to.
     "Win32_UI_WindowsAndMessaging",
@@ -85,6 +88,9 @@ features = [
     # GetModuleHandleW, to load the application icon out of the executable's
     # own resources for the settings window's title bar.
     "Win32_System_LibraryLoader",
+    # GetSystemDirectoryW chooses trusted Windows utilities used by elevated
+    # maintenance work; process environment variables must never choose them.
+    "Win32_System_SystemInformation",
     # UI Automation enumerates the taskbar buttons on a background COM thread
     # to distinguish a real foreign icon from the chevron's brief tray
     # re-layout.

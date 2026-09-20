@@ -271,12 +271,13 @@ Windows exposes no temperature, fan or voltage API. `MSAcpi_ThermalZoneTemperatu
 thermal zones, frequently unimplemented and often a pinned constant. Real readings live
 behind SuperIO over LPC, CPU MSRs, SMBus, and vendor GPU APIs. All ring-0 or vendor SDK.
 
-**Decision: the user installs LibreHardwareMonitor themselves; Barometer orchestrates it.**
+**Decision: do not ship LibreHardwareMonitor; fetch a pinned copy only when the user asks.**
 
 LHM already enumerates NVIDIA (NVML), AMD (ADL), Intel GPUs, CPU packages across Intel and
 three AMD families, and the Nuvoton/ITE/Fintek SuperIO chips. Reimplementing that is most
-of what LHM *is*. It is not shipped with Barometer, so there is no MPL redistribution
-obligation and no 70 MB of .NET in the installer — only integration and credit.
+of what LHM *is*. It is downloaded into Barometer's ACL-protected Program Files directory
+rather than included in the installer, so no MPL redistribution obligation is taken on and
+no 70 MB of .NET library is present for users who do not want sensors.
 
 ### The integration surface
 
@@ -306,8 +307,8 @@ stale OpenHardwareMonitor leftover. There is no WMI provider in the tree. Do not
 ### What orchestration means here
 
 **Superseded with the section above.** What shipped is narrower and quieter: the Sensors
-pane offers to download the pinned release into `%LOCALAPPDATA%`, the helper loads the
-library from there or from wherever the user says, and no other program is started,
+pane offers to download the pinned release beside Barometer under Program Files, and the
+helper refuses executable libraries in user-writable locations. No other program is started,
 configured or written to. The list below is the plan it replaced.
 
 1. **Detect** an installed LHM. It is frequently run portable from a zip, so registry
@@ -502,6 +503,7 @@ Taken from Yamato and Clicker, which are the same author's Rust on Windows:
   `unsafe` block carries a `// SAFETY:` line saying what makes it sound.
 - Readings that stop arriving render as unavailable, never as a stale number. This is the
   Mac app's rule and it is why `Readout` has an `unavailable` flag instead of an `Option`.
+- Process lists are read-only. Barometer monitors the machine; it does not terminate tasks.
 
 ## Environment
 

@@ -494,8 +494,8 @@ fn bytes(value: Option<u64>) -> String {
 }
 
 /// One process: its name over a bar of its share of the installed memory,
-/// and what it holds, from ProcessRow, in the row the CPU panel's processes
-/// use. No end-task glyph: the Swift's memory rows have none.
+/// and what it holds, from ProcessRow, in the same read-only row the CPU
+/// panel's processes use.
 fn process_row(b: &mut Builder<'_>, index: u32, process: &ProcessMemory, total: u64, accent: Accent) {
     let row = b.row_begin(Id::Custom(PROCESS_ID + index), PROCESS_ROW_H, false);
     let figure = format::bytes(process.working_set);

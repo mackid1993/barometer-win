@@ -27,15 +27,13 @@ use std::ptr;
 use windows_sys::Wdk::System::SystemInformation::{
     NtQuerySystemInformation, SystemProcessInformation, SystemProcessorPerformanceInformation,
 };
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, STATUS_INFO_LENGTH_MISMATCH,
-};
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER, STATUS_INFO_LENGTH_MISMATCH};
 use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows_sys::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx, GetTickCount64, RelationProcessorCore,
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
 use windows_sys::Win32::System::WindowsProgramming::{
     SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, SYSTEM_PROCESS_INFORMATION,
 };
@@ -520,25 +518,6 @@ pub fn summary() -> Option<SystemSummary> {
     })
 }
 
-/// Ends a process, as the Mac's row sends SIGTERM. Err carries the Win32
-/// error, which is ERROR_ACCESS_DENIED for a process that is not ours to end.
-pub fn terminate(pid: u32) -> Result<(), u32> {
-    // SAFETY: the handle is checked and closed below.
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle.is_null() {
-            return Err(GetLastError());
-        }
-        let ok = TerminateProcess(handle, 1);
-        let error = if ok == 0 { GetLastError() } else { 0 };
-        CloseHandle(handle);
-        if ok == 0 {
-            Err(error)
-        } else {
-            Ok(())
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The sampler

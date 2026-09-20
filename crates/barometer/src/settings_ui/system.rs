@@ -400,25 +400,47 @@ pub fn adopt_executable_icon(hwnd: HWND) {
     }
 }
 
-/// Opens a page in the user's browser.
+/// Opens one of the application's own pages through the desktop shell.
 ///
-/// Takes a `'static` string on purpose. Everything this window opens is a
-/// compile-time constant - a project page, a license - and the type makes it
-/// impossible to hand the shell something that arrived over the network,
-/// which is AGENTS.md's rule for anything that executes.
-pub fn open_url(url: &'static str) {
-    // SAFETY: terminated constants; the returned pseudo-handle is not a
-    // resource.
+/// Barometer runs elevated for hardware sensors. Invoking a URL handler
+/// directly can therefore start a new browser with the elevated token. The
+/// taskbar proves a medium-integrity Explorer already exists; asking that
+/// single-instance shell to open the URL keeps the browser in the user's
+/// ordinary desktop session instead.
+pub fn open_url(url: &str) {
+    let Some(explorer) = explorer_path() else { return };
+    // SAFETY: terminated strings that live through the call; the returned
+    // pseudo-handle is not a resource.
     unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             wide_nul("open").as_ptr(),
+            explorer.as_ptr(),
             wide_nul(url).as_ptr(),
-            std::ptr::null(),
             std::ptr::null(),
             SW_SHOWNORMAL,
         );
     }
+}
+
+/// Explorer from the real Windows directory, never executable-name search,
+/// App Paths, the current directory, or PATH.
+fn explorer_path() -> Option<Vec<u16>> {
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut path = vec![0u16; 32_768];
+    // SAFETY: a writable UTF-16 buffer whose element count is passed exactly.
+    let length = unsafe { GetWindowsDirectoryW(path.as_mut_ptr(), path.len() as u32) } as usize;
+    if length == 0 || length >= path.len() {
+        return None;
+    }
+    path.truncate(length);
+    if !matches!(path.last(), Some(unit) if *unit == b'\\' as u16 || *unit == b'/' as u16) {
+        path.push(b'\\' as u16);
+    }
+    path.extend("explorer.exe".encode_utf16());
+    path.push(0);
+    Some(path)
 }
 
 /// The primary monitor's work area, which is where the window first opens.
@@ -444,6 +466,16 @@ pub fn primary_work_area() -> Option<RECT> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn browser_handoff_uses_windows_own_explorer_by_absolute_path() {
+        let wide = explorer_path().expect("Windows directory");
+        let text = String::from_utf16_lossy(&wide[..wide.len() - 1]);
+        let path = Path::new(&text);
+        assert!(path.is_absolute(), "{text}");
+        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("explorer.exe"));
+    }
 
     #[test]
     fn the_picker_keeps_every_font_the_machine_has() {

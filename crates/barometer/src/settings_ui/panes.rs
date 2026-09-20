@@ -598,7 +598,7 @@ fn sensors_sections(b: &mut Builder, view: &View) {
                 lhm_install::Progress::Verifying => (0.9, "Checking the download against its digest"),
                 lhm_install::Progress::Extracting => (0.95, "Unpacking"),
             };
-            b.row_status(Ink::Tertiary, words, Some("From its GitHub releases, into your own AppData."));
+            b.row_status(Ink::Tertiary, words, Some("From its GitHub releases, beside Barometer under Program Files."));
             let row = b.row(32.0);
             b.push(Element {
                 id: Id::None,
@@ -645,7 +645,7 @@ fn sensors_sections(b: &mut Builder, view: &View) {
                 b.row_paragraph(
                     "Windows gives no temperatures, fans or voltages to apps, so Barometer reads \
                      them through LibreHardwareMonitor. It is not included: Barometer can download \
-                     it for you - about 9 MB from its GitHub releases, into your own AppData - and \
+                     it for you - about 9 MB from its GitHub releases, into its protected Program Files folder - and \
                      only ever reads from it.",
                 );
             }
@@ -688,7 +688,7 @@ fn sensors_sections(b: &mut Builder, view: &View) {
     }];
     if installed {
         // Removing it has to be offered here, because nothing else will: it is
-        // unpacked into AppData and has no entry in Add or Remove Programs, so
+        // unpacked beside Barometer and has no entry of its own in Add or Remove Programs, so
         // this pane is the only place it can be got rid of.
         buttons.push(ButtonSpec {
             id: Id::RemoveLhm,
@@ -700,7 +700,7 @@ fn sensors_sections(b: &mut Builder, view: &View) {
     }
     b.row_buttons(
         Some(
-            "About 9 MB from LibreHardwareMonitor's own GitHub releases, into your AppData. Free software under the MPL 2.0, checked against its published digest, and only ever read from - Barometer ships none of it.",
+            "About 9 MB from LibreHardwareMonitor's own GitHub releases, beside Barometer under Program Files. Free software under the MPL 2.0, checked against its published digest, and only ever read from - Barometer ships none of it.",
         ),
         &buttons,
     );
@@ -736,25 +736,9 @@ fn sensors_sections(b: &mut Builder, view: &View) {
 
     // Which reading is shown, in what unit and how often, all live in the
     // Sensors inspector above - with every other module's settings, which is
-    // where somebody looks for them. What is left here is the source.
-
-    b.section("Library");
-    b.card_begin();
-    // Not "leave it empty": Barometer writes the path here itself when it
-    // fetches a copy, so the field is only ever typed into by somebody
-    // pointing at an installation of their own.
-    b.row_field(
-        Id::LibraryDir,
-        Some("Location"),
-        Some(
-            "The folder holding LibreHardwareMonitorLib.dll. Barometer fills this in when it downloads a copy for you; set it yourself only to use an installation of your own, such as a portable copy or one from LibreHardwareMonitor's installer.",
-        ),
-        view.model.settings.library_directory.as_deref().unwrap_or(""),
-        "Not set",
-        false,
-        view.editing == Some(Id::LibraryDir),
-    );
-    b.card_end();
+    // where somebody looks for them. Barometer's managed library is installed
+    // beside the application in Program Files; no user-writable library path
+    // is accepted by the elevated helper.
 }
 
 fn weather_sections(b: &mut Builder, view: &View) {

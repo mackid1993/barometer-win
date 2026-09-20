@@ -76,7 +76,7 @@ $env:CARGO_ENCODED_RUSTFLAGS = ($remaps -join [char]0x1F)
 Write-Host 'Building...' -ForegroundColor Yellow
 Push-Location $repo
 try {
-    cargo build --release
+    cargo build --release --locked
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
 
     if (-not $SkipHelper) {
@@ -88,6 +88,10 @@ try {
         dotnet publish (Join-Path $repo 'helper\BarometerSensorsHelper.csproj') `
             -c Release -r win-x64 --nologo
         if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
+        $helperProbe = Join-Path $repo `
+            'helper\bin\Release\net10.0-windows\win-x64\publish\barometer-sensors.exe'
+        & $helperProbe --self-test-permissions
+        if ($LASTEXITCODE -ne 0) { throw 'sensor helper permission-mask self-test failed.' }
     }
 } finally {
     Pop-Location

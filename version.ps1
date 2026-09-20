@@ -3,9 +3,9 @@
 # Barometer - a system monitor for the Windows taskbar
 # Copyright (c) 2026 David Brustein
 #
-# Reads or sets the version, in the one place it is defined and the one place
-# it is duplicated. Called by scripts\build.ps1 and by the build workflow;
-# usable on its own.
+# Reads or sets the version in the one place it is defined and the installer
+# fallback where it is duplicated. Run this before committing a version bump;
+# local and CI builds only read and validate the committed value.
 #
 #   version.ps1              print the current version
 #   version.ps1 1.0.1        set it
@@ -29,6 +29,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $cargo = Join-Path $root 'Cargo.toml'
 $iss = Join-Path $root 'installer\barometer.iss'
+$lock = Join-Path $root 'Cargo.lock'
 
 # Anchored to [workspace.package] rather than taking the first `version =` in
 # the file. The two happen to be the same line today, and would stop being the
@@ -81,6 +82,22 @@ $match = [Regex]::Match($text, $section)
 $span = $match.Groups[1]
 $text = $text.Remove($span.Index, $span.Length).Insert($span.Index, $Version)
 [IO.File]::WriteAllText($cargo, $text)
+
+# `cargo build --locked` is a release invariant, so the three local package
+# entries must move with the workspace version rather than being left for Cargo
+# to rewrite during a build. Dependency package versions are not touched.
+if (Test-Path $lock) {
+    $text = [IO.File]::ReadAllText($lock)
+    foreach ($package in 'barometer', 'barometer-app', 'barometer-core') {
+        $escaped = [Regex]::Escape($package)
+        $pattern = "(?ms)(\[\[package\]\]\s+name\s*=\s*`"$escaped`"\s+version\s*=\s*)`"[^`"]+`""
+        if (-not [Regex]::IsMatch($text, $pattern)) {
+            throw "no Cargo.lock package entry found for $package"
+        }
+        $text = [Regex]::Replace($text, $pattern, "`${1}`"$Version`"", 1)
+    }
+    [IO.File]::WriteAllText($lock, $text)
+}
 
 # Inno Setup cannot read Cargo.toml. The build passes /DAppVersion so the
 # packaged version comes from Cargo.toml either way, but the script carries a

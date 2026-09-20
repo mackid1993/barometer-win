@@ -63,9 +63,8 @@ use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_DWORD,
     REG_OPTION_NON_VOLATILE, REG_SZ,
 };
-use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_YESNO, SW_SHOWNORMAL,
+    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_YESNO,
 };
 
 use crate::update::Version;
@@ -325,18 +324,7 @@ fn ask(message: &str, buttons: u32) -> i32 {
 
 /// Opens PawnIO's page in whatever the user's browser is.
 fn open_download_page() {
-    // SAFETY: NUL-terminated constants; the returned pseudo-handle is not a
-    // resource and is deliberately dropped.
-    unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            wide("open").as_ptr(),
-            wide(DOWNLOAD_PAGE).as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL as i32,
-        );
-    }
+    crate::settings_ui::system::open_url(DOWNLOAD_PAGE);
 }
 
 fn wide(text: &str) -> Vec<u16> {

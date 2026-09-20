@@ -225,11 +225,11 @@ pub trait Module: Send {
     /// itself.
     /// Whether anything on screen can show what this module reads.
     ///
-    /// Only the sensors module acts on it, and only because its reading
-    /// costs a walk of every device on the machine in another process. A
-    /// module whose sample is a handful of syscalls has nothing to gain by
-    /// skipping it and a stale counter to lose, so this is not a general
-    /// invitation to stop sampling.
+    /// Sensors acts on it because a reading costs a walk of every device in
+    /// another process. Weather acts on it because a disabled module must not
+    /// make network requests or geolocate the user. A module whose sample is a
+    /// handful of syscalls has nothing to gain by skipping it and a stale
+    /// counter to lose, so this is not a general invitation to stop sampling.
     fn shown(&mut self, shown: bool) {
         let _ = shown;
     }

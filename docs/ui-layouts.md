@@ -246,8 +246,8 @@ the macOS app, renamed where Windows differs. Default in bold.
 | Interval | slider 1–10 s | **2 s** |
 
 Flyout: history graph (1 min–24 h), per-core bars with P/E labels when the OS reports hybrid cores, load
-(1/5/15 min is Unix-only: show "Processes · Threads · Handles · Uptime" instead), top 5 processes with
-icons and an end-task glyph on hover.
+(1/5/15 min is Unix-only: show "Processes · Threads · Handles · Uptime" instead), and the top 5 processes
+with icons in a read-only list.
 
 ### 3.2 GPU
 
@@ -883,7 +883,7 @@ reservation shrinks to what remains.
 │ └──────────────────────────────────────┘ │
 │ ┌──────────────────────────────────────┐ │
 │ │ Top processes                        │ │
-│ │ [ic] Firefox                  18 %  ✕│ │  rows 36; end-task glyph on hover; value tnum
+│ │ [ic] Firefox                     18 %│ │  rows 36; read-only; value tnum
 │ │ [ic] Code                      6 %   │ │
 │ │ [ic] Explorer                  2 %   │ │
 │ └──────────────────────────────────────┘ │
@@ -939,10 +939,9 @@ fade; both 0 under reduced motion. Nothing inside the panel animates except grap
 
 ### 9.4 Keyboard and accessibility
 
-Tab moves through the time-range dropdown, process rows (Enter = end task after a one-line inline confirm
-"End Firefox?" [End] [Keep] replacing the row), copy glyphs, tabs (Combined) and the footer. Arrow keys move
-within a list; Left/Right switch Combined tabs. The panel is a UIA `Pane` named "CPU details"; graphs expose
-their current value and range as text.
+Tab moves through the time-range dropdown, copy glyphs, tabs (Combined) and the footer. Process rows are
+read-only. Arrow keys move within a list; Left/Right switch Combined tabs. The panel is a UIA `Pane` named
+"CPU details"; graphs expose their current value and range as text.
 
 ## 10. Keyboard map
 

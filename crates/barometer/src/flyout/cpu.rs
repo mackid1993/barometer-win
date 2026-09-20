@@ -25,8 +25,8 @@
 //
 // The processes come from barometer-core's sys::processes worker, sampled on
 // its own cadence; the strip's thread folds its latest sample into the
-// snapshot it publishes. Ending one is TerminateProcess with no question
-// asked, which is what the Mac does for a process of the user's own.
+// snapshot it publishes. They are readings only: Barometer is a monitor, not
+// a task manager, and an updating list is no place for a destructive control.
 //
 // HistoryRange, the timeline, the range picker and the chip helpers live
 // here and the GPU and memory flyouts borrow them, as the Swift keeps
@@ -39,7 +39,6 @@ use std::sync::{Arc, Mutex};
 
 use barometer_core::format;
 use barometer_core::modules::LoadAverage;
-use barometer_core::sys::processes;
 use barometer_core::ModuleId;
 
 use super::ui::{Accent, Builder, Graph, Id, Ink, Kind, Measure, Style, MEASURING};
@@ -47,9 +46,9 @@ use super::{Content, Context, Page, Response};
 use crate::settings_ui::gdi::Align;
 use crate::settings_ui::geometry::Rect;
 use crate::settings_ui::model::module_glyph;
-use crate::settings_ui::theme::{self, glyph, Color};
+use crate::settings_ui::theme::{self, Color};
 
-pub use processes::CoreKind;
+pub use barometer_core::sys::processes::CoreKind;
 
 /// The interface glyphs the process and address rows draw, named here for
 /// the reason weather.rs names its own: theme.rs's table belongs to the
@@ -425,24 +424,7 @@ pub struct CpuSnapshot {
 pub enum CpuAction {
     /// The panel changed; lay it out again.
     Rebuild,
-    /// The end-task glyph on a process row, from CPUProcessRow.terminate.
-    /// The confirmation the Swift shows for another user's process is the
-    /// chrome's to put up; the panel only says which process was meant.
-    EndTask { pid: u32, name: String },
 }
-
-/// A process row, by its place in the list; the row is only ever washed under
-/// the pointer, so which row it is is all that matters.
-const PROCESS_ID: u32 = 100;
-
-/// The end-task glyph, by the process id of the row it sits on.
-///
-/// By the row's *index* before, which meant the press ended whatever process
-/// had climbed into that slot by the time it landed: the list is re-sampled
-/// every two seconds and re-sorted by load, and there is no confirmation
-/// between the press and the kill. The row the user aimed at is the one named
-/// on it, so the id carries the process rather than the position.
-const END_TASK_ID: u32 = 1 << 31;
 
 /// The processor flyout's layout.
 #[derive(Clone, Debug, PartialEq)]
@@ -483,16 +465,7 @@ impl CpuFlyout {
             self.range = range;
             return Some(CpuAction::Rebuild);
         }
-        let Id::Custom(n) = id else { return None };
-        if n < END_TASK_ID {
-            return None;
-        }
-        // Still shown, or the row has scrolled out from under the press since
-        // it was drawn and there is nothing the user could have meant.
-        let pid = n & !END_TASK_ID;
-        self.shown_processes()
-            .find(|process| process.pid == pid)
-            .map(|process| CpuAction::EndTask { pid: process.pid, name: process.name.clone() })
+        None
     }
 
     fn shown_processes(&self) -> impl Iterator<Item = &ProcessLoad> {
@@ -573,8 +546,8 @@ impl CpuFlyout {
         if self.shown_processes().next().is_some() {
             let card = b.card_begin(None);
             b.section_label("Top processes");
-            for (index, process) in self.shown_processes().enumerate() {
-                process_row(b, index as u32, process, accent);
+            for process in self.shown_processes() {
+                process_row(b, process, accent);
             }
             b.card_end(card);
         } else if self.show_processes && s.measuring {
@@ -625,11 +598,6 @@ impl CpuFlyout {
 pub struct CpuContent {
     slot: Arc<Mutex<CpuSnapshot>>,
     flyout: CpuFlyout,
-    /// What to do about a process the user asked to end. The Swift sends
-    /// SIGTERM from the view and so, by default, does this: TerminateProcess
-    /// with no question asked. A caller that wants to ask first, or a test,
-    /// puts its own action here.
-    end_task: Box<dyn FnMut(u32, &str) + Send>,
 }
 
 impl CpuContent {
@@ -638,21 +606,7 @@ impl CpuContent {
         CpuContent {
             slot,
             flyout: CpuFlyout::new(CpuSnapshot::default()),
-            end_task: Box::new(|pid, _name| {
-                // A process that will not be ended - another user's, or
-                // Windows' own - is left standing without a word: the Mac
-                // asks first for those, and the row is still there to say
-                // nothing happened.
-                let _ = processes::terminate(pid);
-            }),
         }
-    }
-
-    /// What to do when the user presses a process row's end-task glyph,
-    /// instead of ending it outright.
-    pub fn on_end_task(mut self, action: impl FnMut(u32, &str) + Send + 'static) -> CpuContent {
-        self.end_task = Box::new(action);
-        self
     }
 }
 
@@ -679,10 +633,6 @@ impl Content for CpuContent {
     fn activate(&mut self, id: Id) -> Response {
         match self.flyout.activate(id) {
             Some(CpuAction::Rebuild) => Response::Relayout,
-            Some(CpuAction::EndTask { pid, name }) => {
-                (self.end_task)(pid, &name);
-                Response::None
-            }
             None => Response::None,
         }
     }
@@ -870,30 +820,24 @@ pub(super) fn process_name_and_share(
     share_bar(b, bar, fraction, accent, false);
 }
 
-/// One process, from ProcessRow with CPUProcessRow's trailing end-task
-/// button. The row answers to an id so the chrome can wash it under the
-/// pointer; the glyph answers to its own.
-fn process_row(b: &mut Builder<'_>, index: u32, process: &ProcessLoad, accent: Accent) {
-    let row = b.row_begin(Id::Custom(PROCESS_ID + index), PROCESS_ROW_H, false);
-    let end = Rect::new(row.right() - 6.0 - 20.0, row.y, 20.0, row.h);
+/// One read-only process row: name, load bar, and share of the machine.
+fn process_row(b: &mut Builder<'_>, process: &ProcessLoad, accent: Accent) {
+    let row = Rect::new(b.inner_x(), b.y(), b.inner_w(), PROCESS_ROW_H);
+    b.passive(row, Kind::Row { selected: false });
     let figure = percent1(process.load);
     let figure_w = b.text_width(&figure, Style::Body);
-    let figure_x = end.x - 8.0 - figure_w;
+    let figure_x = row.right() - 6.0 - figure_w;
     let icon = super::appicon::icon_for(process.pid);
     process_name_and_share(b, row, &process.name, process.load, figure_x - 10.0, accent, icon);
     b.text(Rect::new(figure_x, row.y, figure_w, row.h), &figure, Style::Body, Ink::Secondary, Align::Right);
-    b.control(
-        Id::Custom(END_TASK_ID | process.pid),
-        end,
-        Kind::Glyph { glyph: glyph::CANCEL, size: 12.0, ink: Ink::Tertiary },
-    );
     b.advance(PROCESS_ROW_H);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::ui::{Element, Palette, CARD_GAP, CARD_PAD, PANEL_PAD, PANEL_W};
+    use super::super::ui::{hit, Element, Palette, CARD_GAP, CARD_PAD, PANEL_PAD, PANEL_W};
     use super::*;
+    use crate::settings_ui::theme::glyph;
     use crate::settings_ui::theme::{Theme, DEFAULT_ACCENT};
 
     /// Seven DIPs a character at body size, scaled by the style, as the
@@ -1208,16 +1152,23 @@ mod tests {
         let mut flyout = CpuFlyout::new(full());
         flyout.show_processes = false;
         assert_eq!(cards(&layout(&flyout)).len(), 3);
-        // Five of the seven, with the end-task glyph on each.
+        // Five of the seven, read-only: a system monitor has no business
+        // terminating a process from an unlabeled glyph in an updating list.
         let flyout = CpuFlyout::new(full());
         let elements = layout(&flyout);
-        let rows = elements.iter().filter(|e| matches!(e.kind, Kind::Row { .. })).count();
-        assert_eq!(rows, 5);
+        let rows: Vec<&Element> = elements.iter().filter(|e| matches!(e.kind, Kind::Row { .. })).collect();
+        assert_eq!(rows.len(), 5);
+        assert!(rows.iter().all(|row| !row.interactive));
+        assert_eq!(
+            hit(&elements, rows[0].rect.right() - 10.0, rows[0].rect.center_y()),
+            None,
+            "the former end-task area is not a hidden control"
+        );
         let glyphs = elements
             .iter()
             .filter(|e| matches!(e.kind, Kind::Glyph { glyph, .. } if glyph == glyph::CANCEL))
             .count();
-        assert_eq!(glyphs, 5);
+        assert_eq!(glyphs, 0);
     }
 
     #[test]
@@ -1251,28 +1202,6 @@ mod tests {
         assert!((picker.last().unwrap().rect.right() - (PANEL_PAD + COLUMN_W - CARD_PAD)).abs() < 1e-3);
     }
 
-    #[test]
-    fn an_end_task_press_names_the_process_it_was_drawn_for_and_not_a_position() {
-        let mut flyout = CpuFlyout::new(full());
-        assert_eq!(
-            flyout.activate(Id::Custom(END_TASK_ID | 1001)),
-            Some(CpuAction::EndTask { pid: 1001, name: "process1".to_string() })
-        );
-        // The list re-sorts under the pointer between the draw and the press.
-        // The press must still mean the process it was drawn for, so the same
-        // id names the same process from its new place - and names nothing at
-        // all once that process is off the list.
-        let mut shuffled = full();
-        shuffled.top.swap(0, 3);
-        flyout.snapshot = shuffled;
-        assert_eq!(
-            flyout.activate(Id::Custom(END_TASK_ID | 1001)),
-            Some(CpuAction::EndTask { pid: 1001, name: "process1".to_string() })
-        );
-        assert_eq!(flyout.activate(Id::Custom(END_TASK_ID | 9999)), None);
-        assert_eq!(flyout.activate(Id::Custom(PROCESS_ID)), None);
-        assert_eq!(flyout.activate(Id::None), None);
-    }
 
     #[test]
     fn uptime_reads_like_the_mac() {
@@ -1374,11 +1303,7 @@ mod tests {
     #[test]
     fn the_content_follows_its_feed_and_hands_presses_on() {
         let slot = Arc::new(Mutex::new(CpuSnapshot::default()));
-        let ended = Arc::new(Mutex::new(None));
-        let mut content = CpuContent::new(Arc::clone(&slot)).on_end_task({
-            let ended = Arc::clone(&ended);
-            move |pid, name| *ended.lock().unwrap() = Some((pid, name.to_string()))
-        });
+        let mut content = CpuContent::new(Arc::clone(&slot));
         let palette = Palette::resolve(Theme::resolve(false, DEFAULT_ACCENT));
         let cx = Context {
             width: PANEL_W,
@@ -1397,11 +1322,10 @@ mod tests {
         assert!(!content.tick());
         assert!((page.height - (CpuFlyout::new(full()).height(PANEL_W - 2.0 * PANEL_PAD, &measure) + 2.0 * PANEL_PAD)).abs() < 1e-3);
         assert_eq!(cards(&page.elements).len(), 4);
-        // A range press changes the shape; the end-task glyph reaches the handler.
+        // A range press changes the shape; display-only rows do nothing.
         assert_eq!(content.activate(HistoryRange::ThreeHours.id()), Response::Relayout);
         assert_eq!(content.activate(HistoryRange::ThreeHours.id()), Response::None);
-        assert_eq!(content.activate(Id::Custom(END_TASK_ID | 1002)), Response::None);
-        assert_eq!(*ended.lock().unwrap(), Some((1002, "process2".to_string())));
+        assert_eq!(content.activate(Id::Custom(1002)), Response::None);
         assert_eq!(content.activate(Id::Settings), Response::None);
     }
 

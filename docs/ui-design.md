@@ -694,8 +694,8 @@ created once per theme. No timers run when nothing changes; hover does not start
   is Windows').
 - **Header card**: tinted with the module color at 12 % over the card; module tile 32; Title value (28,
   `tnum`) right-aligned; Body caption beneath.
-- **Rows**: 36 tall, hover `subtle.hover`, radius 4; process rows carry an icon 16, name, value `tnum`, and
-  an action glyph that appears on hover (end task `E711`, copy `E8C8`).
+- **Rows**: 36 tall, hover `subtle.hover`, radius 4; process rows carry an icon 16, name and value `tnum`
+  and are read-only. Non-destructive row actions such as copy use a trailing glyph (`E8C8`) on hover.
 - **Graphs**: 1 DIP line in the graph role, area fill in the fill role at the graph-opacity setting
   (default 30 %), 1 DIP hairline axis in `stroke.divider`, Caption tick labels in `text.secondary`, time-range
   dropdown (1 min … 24 h) in the card's top-right.

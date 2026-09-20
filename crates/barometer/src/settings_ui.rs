@@ -95,6 +95,11 @@ struct Shared {
     /// The window's handle, as an integer so it can cross threads; zero
     /// while there is no window.
     hwnd: AtomicIsize,
+    /// Set before joining the window thread. It exists separately from HWND
+    /// because closing can race the thread's font enumeration and window
+    /// creation, while there is no handle available to post a close message
+    /// to yet.
+    closing: AtomicBool,
     /// A pane the app asked the window to show next, as its index plus one;
     /// zero when nothing is asked. Read when the window is built and on
     /// every show, so the request works whether the window exists yet.
@@ -133,6 +138,7 @@ impl SettingsWindow {
             changed: AtomicBool::new(false),
             snapshot: Mutex::new(Snapshot::default()),
             hwnd: AtomicIsize::new(0),
+            closing: AtomicBool::new(false),
             pane_request: std::sync::atomic::AtomicUsize::new(pane.index() + 1),
             incoming: Mutex::new(None),
         });
@@ -174,15 +180,21 @@ impl SettingsWindow {
     pub fn show(&mut self) {
         let hwnd = self.shared.hwnd.load(Ordering::Acquire);
         let alive = self.thread.as_ref().is_some_and(|t| !t.is_finished());
-        if hwnd != 0 && alive {
-            // SAFETY: a handle the window thread published; posting to a
-            // window that has since gone is harmless.
-            unsafe { PostMessageW(hwnd as HWND, WM_APP_SHOW, 0, 0) };
+        if alive {
+            if hwnd != 0 {
+                // SAFETY: a handle the window thread published; posting to a
+                // window that has since gone is harmless.
+                unsafe { PostMessageW(hwnd as HWND, WM_APP_SHOW, 0, 0) };
+            }
+            // A zero handle here means the existing thread is still creating
+            // its window. Joining it would wait on the message loop it is
+            // about to enter without ever having sent that loop a close.
             return;
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        self.shared.closing.store(false, Ordering::Release);
         self.thread = thread::Builder::new()
             .name("settings".into())
             .spawn({
@@ -242,6 +254,9 @@ impl SettingsWindow {
 
     /// Destroys the window and waits for its thread.
     pub fn close(&mut self) {
+        // First, so a thread still before CreateWindow can see the request and
+        // leave without ever entering an unsignaled message loop.
+        self.shared.closing.store(true, Ordering::Release);
         let hwnd = self.shared.hwnd.load(Ordering::Acquire);
         if hwnd != 0 {
             // SAFETY: as in `show`.
@@ -256,6 +271,27 @@ impl SettingsWindow {
 impl Drop for SettingsWindow {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn closing_during_startup_does_not_wait_forever_for_an_unpublished_window() {
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut window = SettingsWindow::open(Model::from_settings(Default::default()));
+            window.close();
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "close joined a settings thread that had no HWND to signal"
+        );
     }
 }
 
@@ -293,6 +329,9 @@ const STYLE: u32 =
 
 /// The window's thread: build it, pump it, tear it down.
 fn run(shared: Arc<Shared>) {
+    if shared.closing.load(Ordering::Acquire) {
+        return;
+    }
     let class = wide_nul(CLASS_NAME);
     // SAFETY: a zeroed class filled in before registration; registering
     // twice fails harmlessly and the class stands.
@@ -337,6 +376,9 @@ fn run(shared: Arc<Shared>) {
 
     let model = shared.model.lock().map(|m| m.clone()).unwrap_or_else(|_| Model::from_settings(Default::default()));
     let installed = system::installed_families();
+    if shared.closing.load(Ordering::Acquire) {
+        return;
+    }
     let state = Box::new(WindowState::new(Arc::clone(&shared), model, installed, dpi));
 
     // SAFETY: the class is registered; the state pointer is handed to the
@@ -361,6 +403,13 @@ fn run(shared: Arc<Shared>) {
         return;
     }
     shared.hwnd.store(hwnd as isize, Ordering::Release);
+    if shared.closing.load(Ordering::Acquire) {
+        // SAFETY: the live window was created by this thread. Destruction here
+        // runs its ordinary state cleanup before the thread returns.
+        unsafe { DestroyWindow(hwnd) };
+        shared.hwnd.store(0, Ordering::Release);
+        return;
+    }
     // SAFETY: a live window on this thread.
     unsafe {
         ShowWindow(hwnd, SW_SHOW);
@@ -901,7 +950,6 @@ impl WindowState {
     fn field_text(&self, id: Id) -> String {
         match id {
             Id::Search => self.search.query.clone(),
-            Id::LibraryDir => self.model.settings.library_directory.clone().unwrap_or_default(),
             Id::StackName => match self.selection {
                 Some(StripItem::Stack(stack)) => {
                     self.model.stack(stack).map(|s| s.name.clone()).unwrap_or_default()
@@ -942,12 +990,9 @@ impl WindowState {
     }
 
     /// Takes the EDIT away again, keeping what was typed unless told not to.
-    fn end_edit(&mut self, keep: bool) {
-        let Some(id) = self.editing.take() else { return };
-        if keep && id == Id::LibraryDir {
-            let path = self.edit_buffer.trim();
-            self.model.settings.library_directory = (!path.is_empty()).then(|| path.to_string());
-            self.commit();
+    fn end_edit(&mut self, _keep: bool) {
+        if self.editing.take().is_none() {
+            return;
         }
         // SAFETY: a live child.
         unsafe { ShowWindow(self.edit, SW_HIDE) };
@@ -1009,7 +1054,6 @@ impl WindowState {
                     self.commit();
                 }
             }
-            Some(Id::LibraryDir) => self.edit_buffer = text,
             _ => {}
         }
     }
@@ -1176,14 +1220,6 @@ impl WindowState {
 
     fn on_install_progress(&mut self) {
         let Some(state) = self.lhm_shared.lock().ok().and_then(|mut s| s.take()) else { return };
-        if let LhmState::Installed(path) = &state {
-            // The path the helper wants is the one the installer chose; the
-            // app restarts the helper when it sees this change.
-            self.model.settings.library_directory = Some(path.clone());
-            self.lhm = state;
-            self.commit();
-            return;
-        }
         self.lhm = state;
         self.relayout();
     }
@@ -1332,7 +1368,7 @@ impl WindowState {
 
         let target = self.hit_at(x, y);
         match target {
-            Some(id @ (Id::Search | Id::StackName | Id::LibraryDir | Id::MetricLabel(_))) => {
+            Some(id @ (Id::Search | Id::StackName | Id::MetricLabel(_))) => {
                 self.begin_edit(id);
                 return;
             }
@@ -1615,7 +1651,7 @@ impl WindowState {
             Id::RemoveLhm => self.remove_library(),
             Id::GetPawnIo => system::open_url(panes::PAWNIO_URL),
             Id::Link(url) => system::open_url(url),
-            Id::Search | Id::StackName | Id::LibraryDir | Id::MetricLabel(_) => self.begin_edit(id),
+            Id::Search | Id::StackName | Id::MetricLabel(_) => self.begin_edit(id),
             Id::SearchResult(index) => {
                 if let Some(place) = self.search.results.get(index).cloned() {
                     self.add_place(&place);

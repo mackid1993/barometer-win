@@ -32,15 +32,13 @@ fn main() {
 /// the binary, and without one they show the generic default however good the
 /// artwork is.
 ///
-/// Skipped rather than fatal when the icon or a resource compiler is missing:
-/// an ugly icon should never be the reason a build fails.
+/// The icon may be absent in a developer build, but the resource compilation
+/// itself is mandatory: it also embeds the administrator manifest, DPI
+/// declarations and version metadata. A binary missing those is not Barometer
+/// in a merely cosmetic sense and must never be packaged by a green build.
 fn embed_icon(root: &std::path::Path) {
     let icon = root.join("..").join("..").join("assets").join("barometer.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
-    if !icon.exists() {
-        println!(r"cargo:warning=assets/barometer.ico not found; run scripts\make-icon.ps1");
-        return;
-    }
 
     // The manifest carries the administrator requirement, the DPI awareness and
     // the version 6 common controls. It is a file rather than a string so it
@@ -52,13 +50,15 @@ fn embed_icon(root: &std::path::Path) {
     let mut resource = winresource::WindowsResource::new();
     resource
         .set_manifest_file(&manifest.to_string_lossy())
-        .set_icon(&icon.to_string_lossy())
         .set("ProductName", "Barometer")
         .set("FileDescription", "Weather and system statistics on the taskbar")
         .set("CompanyName", "Barometer")
         .set("LegalCopyright", "\u{00A9} 2026 David Brustein. GNU GPL v3.");
 
-    if let Err(why) = resource.compile() {
-        println!("cargo:warning=could not embed the icon: {why}");
+    if icon.exists() {
+        resource.set_icon(&icon.to_string_lossy());
+    } else {
+        println!(r"cargo:warning=assets/barometer.ico not found; run scripts\make-icon.ps1");
     }
+    resource.compile().expect("could not embed Barometer's manifest and version resources");
 }

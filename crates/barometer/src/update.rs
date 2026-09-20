@@ -6,16 +6,13 @@
 // The GitHub Releases updater, following Yamato's and Clicker's flow.
 //
 // The check is quiet unless it finds a newer release. A person chooses whether
-// to download it. The installer is verified against the digest GitHub itself
-// published before it is written anywhere it could be run from, and Barometer
-// exits so the installer can replace the running executable.
+// to open the project's release page and handles the download themselves; the
+// running application never writes or launches an installer.
 //
-// Nothing new in the dependency tree for any of it. HTTPS is WinHTTP, which is
-// already carrying the weather; SHA-256 is BCrypt, which is in Windows. The
-// alternative is a TLS stack, an async runtime and a hashing crate for
-// something that happens once a day at most, and each of them is one more
-// thing that has to be audited before an unsigned binary asks somebody to run
-// an installer.
+// The feed is still treated as untrusted input. Assets are accepted only from
+// this repository's GitHub release path and only with GitHub's SHA-256 digest,
+// keeping the selection and verification primitives ready for a future updater
+// without making that dormant path part of today's UI.
 
 use barometer_core::net;
 use serde_json::Value;

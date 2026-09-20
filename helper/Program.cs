@@ -87,6 +87,9 @@ internal static class Program
     /// the work lives in Run(), which is called rather than inlined.
     private static int Main(string[] args)
     {
+        if (args is ["--self-test-permissions"])
+            return LibraryLocator.PermissionMaskSelfTest() ? 0 : 1;
+
         List<string> searched = new();
         string? directory = LibraryLocator.Find(args, searched);
         if (directory is null)

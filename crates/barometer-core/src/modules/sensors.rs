@@ -449,6 +449,7 @@ impl Module for SensorsModule {
             settings.sensors.poll_seconds.clamp(crate::store::MIN_POLL_SECONDS, crate::store::MAX_POLL_SECONDS),
             Ordering::Relaxed,
         );
+
     }
 
     /// Cloned rather than borrowed: the caller is the settings window's pin
@@ -693,6 +694,7 @@ mod supervision_tests {
 
         module.shut_down();
     }
+
 
     #[test]
     fn removing_the_library_closes_the_helper_before_the_files_go() {

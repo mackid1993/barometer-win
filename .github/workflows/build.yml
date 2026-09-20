@@ -8,11 +8,9 @@
 # workflow that fires on every commit spends runner minutes proving what the
 # local build already proved.
 #
-# The version typed in is written into Cargo.toml and the installer script by
-# version.ps1, exactly the way scripts\build.ps1 does it locally, and then
-# thrown away with the runner. Nothing is committed and nothing is tagged:
-# this produces a setup file to test, and cutting the release stays a separate
-# decision made with the artifact in hand.
+# The version typed in must already be committed in Cargo.toml and the
+# installer script. CI validates rather than rewriting source, so a draft's tag
+# describes exactly the tree that produced its installer.
 
 name: Build installer
 
@@ -82,24 +80,25 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       - name: Check the version is a version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         shell: pwsh
         run: |
-          $v = '${{ inputs.version }}'.Trim()
+          # Through the environment, not spliced into PowerShell source. The
+          # job can create a release, so even an input that is rejected below
+          # must never become executable syntax first.
+          $v = $env:INPUT_VERSION.Trim()
           if ($v -notmatch '^\d+\.\d+\.\d+$') {
             throw "version '$v' is not major.minor.patch"
           }
           "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # Writes it to Cargo.toml and installer\barometer.iss, the one place it
-      # is defined and the one place it is duplicated. Checked rather than
-      # assumed: version.ps1 replaces by regular expression, and a silent miss
-      # would build the old version under the new name, which is the one kind
-      # of wrong build that looks exactly like a right one.
-      - name: Stamp the version
+      # The tag, package metadata and executable resource must all describe the
+      # committed source. Rewriting only the runner would make a v1.0.0 tag
+      # point at a tree that still called itself something else.
+      - name: Verify the committed version
         shell: pwsh
         run: |
-          ./version.ps1 $env:VERSION
-
           $cargo = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
             Select-Object -First 1
           $iss = Select-String -Path installer\barometer.iss -Pattern '#define AppVersion\s+"([^"]+)"' |
@@ -123,7 +122,7 @@ jobs:
       # is the one the release build made.
       - name: Test
         shell: pwsh
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # Inno Setup ships on the windows runner images, but build.ps1 only
       # warns and skips the installer when it cannot find it - which locally
@@ -166,7 +165,15 @@ jobs:
       # and runs ISCC over the result.
       - name: Build
         shell: pwsh
-        run: ./scripts/build.ps1
+        run: |
+          # target is cached for compilation, but release payloads never are.
+          # A filename left by an earlier run must not satisfy the existence
+          # check for this commit.
+          $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $targetDir = [System.IO.Path]::GetFullPath($metadata.target_directory)
+          $dist = Join-Path $targetDir 'dist'
+          if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+          ./scripts/build.ps1
 
       # Where cargo put it. The target directory is asked for rather than
       # assumed, because build.ps1 asks too - see its comment about the
@@ -181,11 +188,53 @@ jobs:
           if (-not (Test-Path $setup)) {
             throw "the build reported success but $setup is not there"
           }
+          foreach ($required in @(
+            (Join-Path $targetDir 'dist\Barometer\barometer.exe'),
+            (Join-Path $targetDir 'dist\Barometer\barometer-sensors.exe'),
+            (Join-Path $targetDir 'dist\Barometer\LICENSE.md'),
+            (Join-Path $targetDir 'dist\Barometer\NOTICE.md'),
+            (Join-Path $targetDir 'dist\Barometer\barometer.ico')
+          )) {
+            if (-not (Test-Path $required)) { throw "release payload is missing $required" }
+          }
+
+          $app = Join-Path $targetDir 'dist\Barometer\barometer.exe'
+          $helper = Join-Path $targetDir 'dist\Barometer\barometer-sensors.exe'
+          foreach ($binary in @($app, $helper)) {
+            $stream = [IO.File]::OpenRead($binary)
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              $stream.Position = 0x3c
+              $pe = $reader.ReadInt32()
+              $stream.Position = $pe + 4
+              $machine = $reader.ReadUInt16()
+              if ($machine -ne 0x8664) {
+                throw "$binary is PE machine 0x$($machine.ToString('x4')), not x64"
+              }
+            } finally {
+              $stream.Dispose()
+            }
+          }
+
+          $info = (Get-Item $app).VersionInfo
+          if ($info.FileVersion.Trim() -ne $env:VERSION -or
+              $info.ProductVersion.Trim() -ne $env:VERSION) {
+            throw "barometer.exe version is $($info.FileVersion)/$($info.ProductVersion), not $env:VERSION"
+          }
+          $resourceText = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($app))
+          foreach ($marker in @('requireAdministrator', 'PerMonitorV2', 'Microsoft.Windows.Common-Controls')) {
+            if (-not $resourceText.Contains($marker)) {
+              throw "barometer.exe is missing required manifest marker $marker"
+            }
+          }
 
           $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $bytes = (Get-Item $setup).Length
           Write-Host "$setup"
           Write-Host "SHA-256 $hash"
           "SETUP=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SETUP_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SETUP_BYTES=$bytes" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload the installer
         uses: actions/upload-artifact@v4
@@ -220,8 +269,83 @@ jobs:
           # A file rather than an argument, so newlines survive.
           $notes | Out-File -FilePath notes.md -Encoding utf8
 
-          gh release create "v$env:VERSION" `
+          $tag = "v$env:VERSION"
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+
+          function Get-TagRef {
+            try {
+              $encoded = [Uri]::EscapeDataString($tag)
+              return Invoke-RestMethod -Method Get -Uri "$api/git/ref/tags/$encoded" -Headers $headers
+            } catch {
+              $response = $_.Exception.Response
+              if ($response -and [int]$response.StatusCode -eq 404) { return $null }
+              throw
+            }
+          }
+
+          function Resolve-TagTarget($ref) {
+            $target = $ref.object.sha
+            $type = $ref.object.type
+            for ($depth = 0; $type -eq 'tag'; $depth++) {
+              if ($depth -ge 8) { throw "$tag has too many nested annotated tags" }
+              $object = Invoke-RestMethod -Method Get -Uri "$api/git/tags/$target" -Headers $headers
+              $target = $object.object.sha
+              $type = $object.object.type
+            }
+            return $target
+          }
+
+          # Any lookup error other than an explicit 404 is fatal. Treating an
+          # authentication or transient API failure as "tag absent" could make
+          # GitHub bind the draft to an existing tag at another commit.
+          $existing = Get-TagRef
+          if ($null -ne $existing) {
+            $target = Resolve-TagTarget $existing
+            if ($target -ne $env:GITHUB_SHA) {
+              throw "$tag already points to $target, not this build's $env:GITHUB_SHA"
+            }
+          }
+
+          gh release create $tag `
             "$env:SETUP" `
             --draft `
+            --target "$env:GITHUB_SHA" `
             --title "Barometer $env:VERSION" `
             --notes-file notes.md
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+
+          # Read back the draft and any effective tag. This closes the race
+          # between the preflight and release creation instead of trusting the
+          # create command's exit status as proof of provenance.
+          $releases = Invoke-RestMethod -Method Get -Uri "$api/releases?per_page=100" -Headers $headers
+          $matches = @($releases | Where-Object { $_.tag_name -eq $tag -and $_.draft })
+          if ($matches.Count -ne 1) {
+            throw "expected one draft release for $tag, found $($matches.Count)"
+          }
+          $draft = $matches[0]
+          if ($draft.target_commitish -ne $env:GITHUB_SHA) {
+            Invoke-RestMethod -Method Delete -Uri "$api/releases/$($draft.id)" -Headers $headers
+            throw "draft targets $($draft.target_commitish), not $env:GITHUB_SHA"
+          }
+          $assetName = Split-Path $env:SETUP -Leaf
+          $assets = @($draft.assets)
+          if ($assets.Count -ne 1 -or $assets[0].name -ne $assetName -or
+              $assets[0].state -ne 'uploaded' -or
+              $assets[0].size -ne [int64]$env:SETUP_BYTES -or
+              $assets[0].digest -ne "sha256:$env:SETUP_SHA256") {
+            Invoke-RestMethod -Method Delete -Uri "$api/releases/$($draft.id)" -Headers $headers
+            throw "draft asset name, state, size, or SHA-256 does not match the verified installer"
+          }
+          $effective = Get-TagRef
+          if ($null -ne $effective) {
+            $target = Resolve-TagTarget $effective
+            if ($target -ne $env:GITHUB_SHA) {
+              Invoke-RestMethod -Method Delete -Uri "$api/releases/$($draft.id)" -Headers $headers
+              throw "$tag resolved to $target after draft creation, not $env:GITHUB_SHA"
+            }
+          }

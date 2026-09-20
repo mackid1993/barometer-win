@@ -14,9 +14,11 @@
 // One line out, one line back. The parent asks; the helper answers. Nothing
 // samples hardware unless somebody wanted a reading.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::Value;
@@ -78,6 +80,32 @@ impl Drop for Job {
     }
 }
 
+/// A minimal, trusted environment for the elevated self-contained .NET helper.
+///
+/// Inheriting the interactive user's environment would admit CLR startup hooks
+/// and profiler paths before the helper's own code can validate anything.
+fn configure_environment(command: &mut Command, windows: &Path) {
+    let temp = windows.join("Temp");
+    command
+        .env_clear()
+        .env("SystemRoot", windows)
+        .env("WINDIR", windows)
+        .env("TEMP", &temp)
+        .env("TMP", temp);
+}
+
+fn windows_directory() -> Option<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut buffer = vec![0u16; 32_768];
+    // SAFETY: a writable UTF-16 buffer whose element count is passed exactly.
+    let length = unsafe { GetWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_wide(&buffer[..length])))
+}
+
 /// A running sensor helper.
 pub struct HelperProvider {
     child: Child,
@@ -118,11 +146,13 @@ impl HelperProvider {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
         let mut command = Command::new(executable);
+        let windows = windows_directory()
+            .ok_or_else(|| SensorError::Transport("Windows did not report its directory".into()))?;
+        configure_environment(&mut command, &windows);
         if let Some(directory) = library {
-            // `--library` is the helper's first-choice source and outranks its
-            // own search, which is right: a path we were given is an answer,
-            // and a search that then picked a different copy off the machine
-            // would be second-guessing it.
+            // `--library` is the helper's only library source. The helper
+            // independently requires Barometer's exact managed directory,
+            // protected ACLs, and no reparse points before loading code.
             command.arg("--library").arg(directory);
         }
 
@@ -268,5 +298,37 @@ fn confine_to_job(child: &Child) -> Option<Job> {
         );
         AssignProcessToJobObject(job, child.as_raw_handle() as _);
         Some(Job(job as isize))
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+
+    #[test]
+    fn the_helper_inherits_no_clr_hooks_or_profiler_configuration() {
+        let mut command = Command::new("helper.exe");
+        command
+            .env("DOTNET_STARTUP_HOOKS", r"C:\Users\David\hook.dll")
+            .env("CORECLR_ENABLE_PROFILING", "1")
+            .env("CORECLR_PROFILER_PATH", r"C:\Users\David\profiler.dll")
+            .env("DOTNET_BUNDLE_EXTRACT_BASE_DIR", r"C:\Users\David\bundle");
+        configure_environment(&mut command, Path::new(r"C:\Windows"));
+        let variables: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .filter_map(|(name, value)| value.map(|value| (name.to_os_string(), value.to_os_string())))
+            .collect();
+        assert_eq!(variables.len(), 4);
+        for name in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
+            assert!(variables.contains_key(std::ffi::OsStr::new(name)));
+        }
+        for name in [
+            "DOTNET_STARTUP_HOOKS",
+            "CORECLR_ENABLE_PROFILING",
+            "CORECLR_PROFILER_PATH",
+            "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+        ] {
+            assert!(!variables.contains_key(std::ffi::OsStr::new(name)));
+        }
     }
 }

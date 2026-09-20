@@ -45,6 +45,11 @@ AppPublisher={#AppPublisher}
 ; sending them to somebody else's issue tracker.
 AppSupportURL=https://github.com/mackid1993/barometer-win
 DefaultDirName={autopf}\{#AppName}
+; The elevated sensor helper loads executable libraries beside Barometer.
+; Keeping the install under Program Files is therefore a security boundary,
+; not only a default the directory page may move into a user-writable folder.
+DisableDirPage=yes
+UsePreviousAppDir=no
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputBaseFilename={#AppName}-Setup-{#AppVersion}
@@ -80,7 +85,7 @@ CloseApplicationsFilter=*.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "startup"; Description: "Start {#AppName} when I sign in"; GroupDescription: "Startup:"
+Name: "startup"; Description: "Start {#AppName} when I sign in"; GroupDescription: "Startup:"; Check: StartupBelongsToSetupUser
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 ; Most hardware sensors are behind instructions and ports no ordinary program
 ; may use: the processor's temperatures in model-specific registers, and the
@@ -139,7 +144,7 @@ Source: "{#StageDir}\libMonoPosixHelper.dll"; DestDir: "{app}"; Flags: ignorever
 ; work - but a shortcut that names its icon keeps the right one even if the
 ; resource is ever stripped, and costs nothing.
 Name: "{group}\{#AppName}";       Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\barometer.ico"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\barometer.ico"; Tasks: desktopicon
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\barometer.ico"; Tasks: desktopicon
 
 [Run]
 ; Start with Windows, as a scheduled task rather than a Run key.
@@ -157,11 +162,16 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename:
 ; "Start Barometer" tick box then had nothing to run - which is exactly how
 ; this was found.
 ;
-; /RL HIGHEST is the part that matters. /F overwrites a task left behind by an
-; earlier version instead of failing, and runhidden keeps schtasks from
-; flashing a console during the install - which is precisely the thing this
-; program has already been accused of doing.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#AppExeName}'; $t = New-ScheduledTaskTrigger -AtLogOn -User '{username}'; $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew; $p = New-ScheduledTaskPrincipal -UserId '{username}' -LogonType Interactive -RunLevel Highest; Register-ScheduledTask -TaskName '{#AppName}' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null"""; Flags: runhidden; Tasks: startup; StatusMsg: "Registering the sign-in task..."
+; Remove any task from a relocatable pre-release first. This is unconditional:
+; an unchecked Startup task means off, and a failed registration must not
+; leave an older highest-privilege action pointing at a user-writable path.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""{#AppName}"""; Flags: runhidden; StatusMsg: "Replacing the sign-in task..."
+
+; The application owns the task definition through Task Scheduler's COM API,
+; the same path its General switch uses. It compares its elevated process SID
+; with Explorer's interactive-user SID before registering, so an
+; over-the-shoulder UAC account can never become somebody else's startup task.
+Filename: "{app}\{#AppExeName}"; Parameters: "--enable-startup"; Flags: runhidden; Tasks: startup; Check: StartupBelongsToSetupUser; StatusMsg: "Registering the sign-in task..."
 
 ; Started through the task rather than directly, when there is a task.
 ;
@@ -171,12 +181,12 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 ; requested operation requires elevation." Running the task we just registered
 ; starts it exactly the way sign-in will, which also proves the task works
 ; before anybody reboots.
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""{#AppName}""";     Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent runhidden;     Tasks: startup
+Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""{#AppName}""";     Description: "Start {#AppName}"; Flags: nowait postinstall skipifsilent runhidden;     Tasks: startup; Check: StartupBelongsToSetupUser
 
 ; And directly for somebody who declined the sign-in task. runascurrentuser is
 ; what keeps this from hitting the same 740: it runs as the elevated account
 ; Setup itself is running as, rather than dropping back to the original user.
-Filename: "{app}\{#AppExeName}"; Description: "Start {#AppName}";     Flags: nowait postinstall skipifsilent runascurrentuser; Tasks: not startup
+Filename: "{app}\{#AppExeName}"; Description: "Start {#AppName}";     Flags: nowait postinstall skipifsilent runascurrentuser; Tasks: not startup; Check: StartupBelongsToSetupUser
 
 ; Opens PawnIO's own site, and only for somebody who asked for it on the tasks
 ; page. Nothing is downloaded or run by the installer: the whole action is
@@ -203,6 +213,13 @@ Filename: "https://pawnio.eu/"; Flags: shellexec nowait skipifsilent runasorigin
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""{#AppName}""";     Flags: runhidden; RunOnceId: "RemoveStartupTask"
 
 [UninstallDelete]
+; These directories contain only the managed copy Barometer downloaded and
+; its interrupted/replaced staging trees. They live under Program Files rather
+; than user settings and go with the application.
+Type: filesandordirs; Name: "{app}\LibreHardwareMonitor"
+Type: filesandordirs; Name: "{app}\LibreHardwareMonitor.incoming"
+Type: filesandordirs; Name: "{app}\LibreHardwareMonitor.previous"
+
 ; The placeholder identities Barometer registers in the notification area live
 ; under NotifyIconSettings and are keyed by a hash Windows chooses, so they
 ; cannot be named here. Barometer hands its icons back on exit and deliberately
@@ -215,6 +232,46 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""{#AppName}""";    
 Type: dirifempty; Name: "{app}"
 
 [Code]
+var
+  StartupUserMatchesSetup: Boolean;
+
+// In an over-the-shoulder UAC prompt `{username}` is the administrator whose
+// credentials were entered, not the person at the desktop. Ask a tiny process
+// running with Inno's preserved pre-UAC token for its username and only offer
+// per-user startup/launch actions when both identities are the same. The app
+// independently compares exact token SIDs before Task Scheduler registration.
+function ResolveStartupUser(): Boolean;
+var
+  TempFile, Params, OriginalUser: String;
+  Lines: TArrayOfString;
+  ResultCode: Integer;
+begin
+  Result := False;
+  TempFile := ExpandConstant('{commondocs}\.barometer-setup-user.txt');
+  DeleteFile(TempFile);
+  Params := Format('/D /Q /C "echo %%USERNAME%%>""%s"""', [TempFile]);
+  if ExecAsOriginalUser(ExpandConstant('{cmd}'), Params, '', SW_HIDE,
+       ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) and
+       LoadStringsFromFile(TempFile, Lines) and (GetArrayLength(Lines) = 1) then
+  begin
+    OriginalUser := Trim(Lines[0]);
+    Result := (OriginalUser <> '') and
+      (CompareText(OriginalUser, ExpandConstant('{username}')) = 0);
+  end;
+  DeleteFile(TempFile);
+  Log(Format('Original interactive user matches Setup account: %d', [Ord(Result)]));
+end;
+
+procedure InitializeWizard();
+begin
+  StartupUserMatchesSetup := ResolveStartupUser();
+end;
+
+function StartupBelongsToSetupUser(): Boolean;
+begin
+  Result := StartupUserMatchesSetup;
+end;
+
 // Getting the running copy out of the way before its files are overwritten.
 //
 // CloseApplications=yes hands this to Restart Manager, which asks a top-level
@@ -267,8 +324,24 @@ begin
   Sleep(400);
 end;
 
+function InstallRootIsProtected(): Boolean;
+var
+  AppPath: String;
+  ProgramFilesPath: String;
+begin
+  AppPath := AddBackslash(ExpandFileName(ExpandConstant('{app}')));
+  ProgramFilesPath := AddBackslash(ExpandFileName(ExpandConstant('{autopf}')));
+  Result := (Length(AppPath) > Length(ProgramFilesPath)) and
+            (CompareText(Copy(AppPath, 1, Length(ProgramFilesPath)), ProgramFilesPath) = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if not InstallRootIsProtected() then
+  begin
+    Result := 'Barometer must be installed under Program Files because its elevated sensor helper loads executable libraries beside it.';
+    exit;
+  end;
   StopRunningCopy();
   Result := '';
 end;

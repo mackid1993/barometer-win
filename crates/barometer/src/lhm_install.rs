@@ -11,7 +11,7 @@
 // half of that decision rather than a retreat from it - a person who wants
 // temperatures should not have to go and find a zip, so pressing a button
 // downloads the same release from the same place they would have downloaded
-// it from themselves, into a directory that belongs to them.
+// it from themselves, into Barometer's protected Program Files directory.
 //
 // What that costs is that the download has to be trustworthy without a
 // signature to lean on, which is why everything here is pinned. The release,
@@ -21,6 +21,8 @@
 // with more force here because the bytes are somebody else's.
 
 use std::fs;
+use std::ffi::OsString;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,18 +73,12 @@ const DOWNLOAD_LIMIT: usize = ASSET_BYTES as usize + 64 * 1024;
 /// would be the worst of both, and there is nothing at run time to catch it.
 pub const LIBRARY: &str = "LibreHardwareMonitorLib.dll";
 
-/// How the helper is told where the library went.
-///
-/// `LibraryLocator` reads this from its environment, and the helper inherits
-/// Barometer's, so exporting it before spawning is all the wiring an install
-/// needs. Named here rather than in the caller because the string has to match
-/// the helper's, and a constant in the module that knows the directory is the
-/// place that will be looked at when it stops matching.
-pub const HELPER_LIBRARY_VARIABLE: &str = "BAROMETER_LHM_DIR";
 
-/// Barometer's own folder under the user's local application data, and the
-/// installation inside it.
-const APP_FOLDER: &str = "Barometer";
+/// The protected installation beside Barometer's executable.
+///
+/// The sensor helper runs elevated. Loading executable DLLs from LocalAppData
+/// would let any medium-integrity process replace them before the next sign-in,
+/// so the managed copy lives under the installer's Program Files directory.
 const INSTALL_FOLDER: &str = "LibreHardwareMonitor";
 
 /// The unpack in progress, and the installation being replaced.
@@ -144,8 +140,8 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::NoInstallLocation => f.write_str(
-                "Windows did not say where this account's application data is kept, \
-                 so there is nowhere to install to",
+                "Barometer is not running from its protected Program Files directory, \
+                 so there is nowhere safe to install to",
             ),
             InstallError::Unreachable(why) => {
                 write!(f, "LibreHardwareMonitor could not be downloaded from github.com: {why}")
@@ -175,9 +171,9 @@ impl std::fmt::Display for InstallError {
     }
 }
 
-/// Where an install goes, if this account has anywhere to put one.
+/// Where an install goes, beside the running Barometer executable.
 pub fn install_directory() -> Option<PathBuf> {
-    Some(target_in(&local_app_data()?))
+    Some(target_in(&protected_application_directory()?))
 }
 
 /// The installed library's directory, when there is one.
@@ -211,8 +207,17 @@ pub fn download_url() -> String {
 /// thread, never on the thread that owns the strip. On success the directory
 /// returned holds the library and is what the helper wants as `--library`.
 pub fn install(progress: Option<&dyn Fn(Progress)>) -> Result<PathBuf, InstallError> {
-    let root = local_app_data().ok_or(InstallError::NoInstallLocation)?;
+    let root = protected_application_directory().ok_or(InstallError::NoInstallLocation)?;
+    harden_tree(&root, "protecting Barometer's installation directory")?;
     install_into(&root, progress)
+}
+
+/// Locks the installed application tree to SYSTEM, Administrators, and
+/// read/execute access for ordinary users before an elevated sign-in task is
+/// registered for it.
+pub fn harden_application_directory() -> Result<(), InstallError> {
+    let root = protected_application_directory().ok_or(InstallError::NoInstallLocation)?;
+    harden_tree(&root, "protecting Barometer's installation directory")
 }
 
 /// Removes the installation, and anything a previous attempt left beside it.
@@ -221,7 +226,7 @@ pub fn install(progress: Option<&dyn Fn(Progress)>) -> Result<PathBuf, InstallEr
 /// event, and reporting a failure to delete what was not there would make
 /// "remove it" fail on the second press.
 pub fn uninstall() -> Result<(), InstallError> {
-    let root = local_app_data().ok_or(InstallError::NoInstallLocation)?;
+    let root = protected_application_directory().ok_or(InstallError::NoInstallLocation)?;
     // The helper has the library mapped into a live process for as long as it
     // runs, and Windows will not delete a file in that state. So it is closed
     // first, and reopened when this returns - by which time the directory is
@@ -312,6 +317,7 @@ fn install_into(root: &Path, progress: Option<&dyn Fn(Progress)>) -> Result<Path
     if !directory.join(LIBRARY).is_file() {
         return Err(InstallError::NoLibrary);
     }
+    harden_tree(&directory, "protecting LibreHardwareMonitor")?;
     Ok(directory)
 }
 
@@ -449,37 +455,145 @@ fn download_path() -> String {
 }
 
 fn target_in(root: &Path) -> PathBuf {
-    root.join(APP_FOLDER).join(INSTALL_FOLDER)
+    root.join(INSTALL_FOLDER)
 }
 
 fn staging_in(root: &Path) -> PathBuf {
-    root.join(APP_FOLDER).join(STAGING_FOLDER)
+    root.join(STAGING_FOLDER)
 }
 
 fn superseded_in(root: &Path) -> PathBuf {
-    root.join(APP_FOLDER).join(SUPERSEDED_FOLDER)
+    root.join(SUPERSEDED_FOLDER)
 }
 
-fn local_app_data() -> Option<PathBuf> {
-    let value = std::env::var_os("LOCALAPPDATA")?;
-    (!value.is_empty()).then(|| PathBuf::from(value))
+fn protected_application_directory() -> Option<PathBuf> {
+    let directory = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    program_files_roots().into_iter().any(|root| directory.starts_with(root)).then_some(directory)
 }
 
-/// Windows' own tar, by absolute path.
-///
-/// bsdtar has been in System32 since Windows 10 1803 and reads zip, which is
-/// why there is no zip crate in the dependency list and no unpacking code in
-/// this file. Addressed absolutely and never through PATH: this is a program
-/// Barometer is about to run, and PATH is writable by whoever controls the
-/// session that started it.
+/// Program Files roots from Windows' Known Folder API, not from environment
+/// variables a medium-integrity parent process can choose.
+fn program_files_roots() -> Vec<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{
+        SHGetKnownFolderPath, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT,
+    };
+
+    let mut roots = Vec::new();
+    for id in [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86] {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the shell allocates a terminated string for a known-folder
+        // identifier and CoTaskMemFree releases it below.
+        if unsafe {
+            SHGetKnownFolderPath(id, KF_FLAG_DEFAULT as u32, std::ptr::null_mut(), &mut raw)
+        } < 0
+            || raw.is_null()
+        {
+            continue;
+        }
+        let mut length = 0;
+        // SAFETY: a successful known-folder result is NUL-terminated.
+        while unsafe { *raw.add(length) } != 0 {
+            length += 1;
+        }
+        let path = PathBuf::from(OsString::from_wide(unsafe {
+            std::slice::from_raw_parts(raw, length)
+        }));
+        unsafe { CoTaskMemFree(raw.cast()) };
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
+/// Windows' own tar, by a path obtained from the kernel rather than the process
+/// environment.
 fn archiver() -> PathBuf {
-    archiver_in(&std::env::var("SystemRoot").unwrap_or_default())
+    system_tool("tar.exe").unwrap_or_default()
 }
 
-fn archiver_in(system_root: &str) -> PathBuf {
-    let root = system_root.trim();
-    let root = if root.is_empty() { r"C:\Windows" } else { root };
-    Path::new(root).join("System32").join("tar.exe")
+/// One executable in the real Windows system directory.
+///
+/// `SystemRoot` and PATH belong to the process environment and can be set by
+/// whatever starts Barometer. The application is elevated, so neither may
+/// choose a child executable.
+fn system_tool(name: &str) -> Option<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0u16; 32_768];
+    // SAFETY: a writable UTF-16 buffer whose element count is passed exactly.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_wide(&buffer[..length])).join(name))
+}
+
+/// Runs Windows' ACL utility from the trusted system directory.
+fn run_icacls(path: &Path, arguments: &[&str], action: &'static str) -> Result<(), InstallError> {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let icacls = system_tool("icacls.exe").ok_or_else(|| InstallError::Filesystem {
+        action,
+        why: "Windows did not report its system directory".to_string(),
+    })?;
+    let output = Command::new(icacls)
+        .arg(path)
+        .args(arguments)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|why| InstallError::Filesystem { action, why: why.to_string() })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(InstallError::Filesystem {
+        action,
+        why: if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("icacls exited with {}", output.status)
+        },
+    })
+}
+
+/// Gives the root explicit protected ACLs, then resets every descendant so it
+/// inherits those ACLs. Applying `(OI)(CI)` grants recursively in one icacls
+/// invocation leaves regular files with an empty DACL: the inheritance flags
+/// describe children of a directory and are not effective access on a file.
+fn protect_access(path: &Path, action: &'static str) -> Result<(), InstallError> {
+    run_icacls(
+        path,
+        &[
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "*S-1-5-32-545:(OI)(CI)RX",
+            "/C",
+            "/Q",
+        ],
+        action,
+    )?;
+
+    let has_children = fs::read_dir(path)
+        .map_err(|why| InstallError::Filesystem { action, why: why.to_string() })?
+        .next()
+        .is_some();
+    if has_children {
+        run_icacls(&path.join("*"), &["/reset", "/T", "/C", "/Q"], action)?;
+    }
+    Ok(())
+}
+
+/// Removes user-writable ACL inheritance, grants only the principals needed at
+/// run time, and transfers ownership away from the interactive user.
+fn harden_tree(path: &Path, action: &'static str) -> Result<(), InstallError> {
+    protect_access(path, action)?;
+    run_icacls(path, &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"], action)
 }
 
 fn doing<T>(action: &'static str, result: std::io::Result<T>) -> Result<T, InstallError> {
@@ -564,19 +678,42 @@ mod tests {
     }
 
     #[test]
-    fn the_installation_lives_under_barometers_own_folder() {
-        let root = Path::new(r"C:\Users\someone\AppData\Local");
+    fn the_installation_lives_beside_barometer_in_program_files() {
+        let root = Path::new(r"C:\Program Files\Barometer");
         assert_eq!(
             target_in(root),
-            Path::new(r"C:\Users\someone\AppData\Local\Barometer\LibreHardwareMonitor")
+            Path::new(r"C:\Program Files\Barometer\LibreHardwareMonitor")
         );
+    }
+
+    #[test]
+    fn hardening_keeps_installed_files_readable_by_the_user() {
+        let scratch = Scratch::new("acl");
+        let executable = scratch.path().join("barometer.exe");
+        fs::write(&executable, b"test executable").unwrap();
+
+        protect_access(scratch.path(), "testing installation permissions").unwrap();
+        let readable = fs::read(&executable);
+
+        // Restore inherited temporary-directory permissions before Scratch
+        // removes its tree, even when an assertion below fails.
+        let icacls = system_tool("icacls.exe").unwrap();
+        let _ = Command::new(icacls)
+            .arg(scratch.path())
+            .args(["/reset", "/T", "/C", "/Q"])
+            .status();
+
+        assert_eq!(readable.unwrap(), b"test executable");
+        // The root grants Users only RX. This process may carry an enabled
+        // Administrators SID on developer machines, so a write attempt here
+        // cannot distinguish the Users ACE from the Administrators F ACE.
     }
 
     #[test]
     fn the_staging_directory_sits_beside_the_installation_not_inside_it() {
         // Beside, because a rename is only atomic within a volume and only
         // possible at all if the source is not under the destination.
-        let root = Path::new(r"C:\Users\someone\AppData\Local");
+        let root = Path::new(r"C:\Program Files\Barometer");
         let target = target_in(root);
         for other in [staging_in(root), superseded_in(root)] {
             assert_eq!(other.parent(), target.parent());
@@ -587,23 +724,20 @@ mod tests {
     }
 
     #[test]
-    fn the_archiver_is_windows_own_and_is_never_looked_up_on_path() {
-        assert_eq!(archiver_in(r"C:\Windows"), Path::new(r"C:\Windows\System32\tar.exe"));
-        // An environment with no SystemRoot still gets an absolute path, and
-        // in particular never a bare "tar.exe" that PATH would resolve.
-        for empty in ["", "   "] {
-            let found = archiver_in(empty);
-            assert!(found.is_absolute(), "{}", found.display());
-            assert_eq!(found, Path::new(r"C:\Windows\System32\tar.exe"));
-        }
+    fn the_archiver_is_windows_own_and_is_never_looked_up_in_the_environment() {
+        let found = archiver();
+        assert!(found.is_absolute(), "{}", found.display());
+        assert_eq!(found.file_name().and_then(|name| name.to_str()), Some("tar.exe"));
+        assert_eq!(
+            found.parent().and_then(Path::file_name).and_then(|name| name.to_str()).map(str::to_ascii_lowercase),
+            Some("system32".to_string())
+        );
     }
 
     #[test]
-    fn the_helper_is_told_about_the_library_in_the_terms_it_looks_for_it() {
-        // Both strings are helper/LibraryLocator.cs's, and an install this
-        // module calls successful is one the helper has to be able to load.
+    fn the_helper_is_told_the_library_name_it_looks_for() {
+        // Must match helper/LibraryLocator.cs.
         assert_eq!(LIBRARY, "LibreHardwareMonitorLib.dll");
-        assert_eq!(HELPER_LIBRARY_VARIABLE, "BAROMETER_LHM_DIR");
     }
 
     #[test]

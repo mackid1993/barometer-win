@@ -79,11 +79,11 @@ SHA-256.
 
 CI is `.github/workflows/build.yml`, modeled on `mackid1993/Yamato`. Manual
 dispatch only — no push or pull_request trigger, deliberately. Inputs:
-`version`, `publish` (drafts a release), `notes`. It stamps the version with
-`version.ps1`, **verifies the stamp landed** in both `Cargo.toml` and
-`installer\barometer.iss`, runs `cargo test --workspace` in debug, makes sure
-Inno Setup is on the image, and then runs `scripts\build.ps1` — which is what
-keeps the local build and the release build from drifting.
+`version`, `publish` (drafts a release), `notes`. The version must already be
+committed in both `Cargo.toml` and `installer\barometer.iss`; CI validates that
+rather than mutating the runner's copy, runs `cargo test --workspace --locked`,
+makes sure Inno Setup is on the image, and then runs `scripts\build.ps1` — which
+is what keeps the local build and the release build from drifting.
 
 **Tags are plain `v1.0.0`.** They used to carry a `windows-` prefix, back when
 one repository held both apps and the updater had to avoid offering a Windows
@@ -167,11 +167,25 @@ temperatures from an earlier machine and an earlier LHM; both were true where
 they were taken, and neither is a target to hit.) The manifest says `requireAdministrator`. The installer relaunches
 itself elevated via `PrivilegesRequired=admin`.
 
-**The scheduled task is registered through PowerShell**, not `schtasks`.
-`schtasks` strips a quote level from `/TR`, so the path split at the space and
-Task Scheduler looked for `C:\Program`. `Register-ScheduledTask` also lets us
-turn off `DisallowStartIfOnBatteries`, which `schtasks` defaults on — a laptop
-would never have started it on battery.
+**The scheduled task is registered by Barometer through Task Scheduler COM**,
+both from the installer (`--enable-startup <user>`) and from the in-app switch.
+The installer used to interpolate the executable path and account into a
+PowerShell program. Apart from being slow, a valid apostrophe in either value
+ended its single-quoted literal. Keep task creation in `startup.rs`, where XML
+escaping covers every valid path and account name.
+
+**The in-app "start when I sign in" switch talks to Task Scheduler over COM**,
+`startup.rs`, with three vtables laid out by hand because `windows-sys` has no
+bindings for them. It used to run PowerShell, three launches per click on the
+settings window's own thread: two seconds each warm, minutes cold after a boot,
+and the window sat "not responding" the whole time. Do not go back to a child
+process for this.
+
+**The strip waits for the taskbar at startup**, `window::wait_for_taskbar`.
+The logon task fires before Explorer has built `Shell_TrayWnd`; a single look
+found nothing and the program exited 0, which read from outside as "does not
+start at sign-in". The trace now opens before the strip is made, so a launch
+that gives up leaves a line behind.
 
 **The sensor helper is supervised, not spawned once.** `modules/sensors.rs`
 re-reads where the library is on every pass and opens/closes/reopens the helper

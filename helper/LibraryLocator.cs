@@ -3,7 +3,7 @@
 // Barometer - a system monitor for the Windows taskbar
 // Copyright (c) 2026 David Brustein
 //
-// Finding LibreHardwareMonitor, and loading it from wherever the user put it.
+// Finding LibreHardwareMonitor in an administrator-protected location.
 //
 // Barometer does not redistribute LibreHardwareMonitor. The user installs it
 // and we read it: this helper is compiled against the library but ships
@@ -18,7 +18,9 @@
 
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
-using Microsoft.Win32;
+using System.Security.AccessControl;
+using System.Security.Principal;
+
 
 internal static class LibraryLocator
 {
@@ -26,50 +28,39 @@ internal static class LibraryLocator
     /// the same directory, which is why the resolver is not written to look
     /// for this one file alone.
     private const string Required = "LibreHardwareMonitorLib.dll";
+    private const FileSystemRights WriteLike = FileSystemRights.Write |
+        FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
+        FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
 
-    /// Where to look, in the order somebody would want us to.
-    ///
-    /// An explicit path first, because a user who has told us where it is has
-    /// answered the question and should not be second-guessed by a search that
-    /// might find a different copy. Then the registry, which is the truth for
-    /// an installed build. Then the handful of places a portable copy actually
-    /// ends up, which is a convenience and never a substitute for asking.
+    private static bool GrantsWriteLike(FileSystemRights rights) =>
+        (rights & WriteLike) != 0;
+
+    /// Build-time regression probe for the ACL mask. Composite rights such as
+    /// FullControl include read bits; putting one in the mask makes Users RX
+    /// look writable and rejects every correctly protected installation.
+    internal static bool PermissionMaskSelfTest() =>
+        !GrantsWriteLike(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize) &&
+        GrantsWriteLike(FileSystemRights.Write) &&
+        GrantsWriteLike(FileSystemRights.Modify) &&
+        GrantsWriteLike(FileSystemRights.FullControl);
+
+    /// Accepts only Barometer's managed directory beside the helper.
     public static string? Find(string[] args, List<string> searched)
     {
         for (int i = 0; i < args.Length - 1; i++)
         {
             if (args[i] == "--library")
             {
-                return Accept(args[i + 1], searched);
+                return AcceptManaged(args[i + 1], searched);
             }
         }
-
-        string? fromEnvironment = Environment.GetEnvironmentVariable("BAROMETER_LHM_DIR");
-        if (!string.IsNullOrWhiteSpace(fromEnvironment))
-        {
-            string? found = Accept(fromEnvironment, searched);
-            if (found is not null) return found;
-        }
-
-        foreach (string candidate in FromRegistry())
-        {
-            string? found = Accept(candidate, searched);
-            if (found is not null) return found;
-        }
-
-        foreach (string candidate in CommonPlaces())
-        {
-            string? found = Accept(candidate, searched);
-            if (found is not null) return found;
-        }
-
         return null;
     }
 
     /// Records a directory as looked-at, and returns it only if the library is
     /// really there. Recording every candidate is what lets the settings pane
     /// answer "where did it look?" instead of shrugging.
-    private static string? Accept(string? directory, List<string> searched)
+    private static string? AcceptManaged(string? directory, List<string> searched)
     {
         if (string.IsNullOrWhiteSpace(directory)) return null;
         string full;
@@ -77,86 +68,95 @@ internal static class LibraryLocator
         catch { return null; }
 
         if (!searched.Contains(full)) searched.Add(full);
+        string? executable = Path.GetDirectoryName(Environment.ProcessPath);
+        if (string.IsNullOrWhiteSpace(executable) || !IsUnderProgramFiles(executable)) return null;
+        string expected = Path.GetFullPath(Path.Combine(executable, "LibreHardwareMonitor"));
+        if (!string.Equals(full, expected, StringComparison.OrdinalIgnoreCase)) return null;
+        if (!Directory.Exists(full) || HasReparsePointBetween(full, executable) || !HasSafeAcl(full)) return null;
         return File.Exists(Path.Combine(full, Required)) ? full : null;
     }
 
-    /// Install locations recorded by an installer, per-machine and per-user.
-    private static IEnumerable<string> FromRegistry()
+    /// The helper runs elevated, so it may execute libraries only from
+    /// Program Files. A path in AppData, Downloads or another user-writable
+    /// location would turn the next scheduled launch into an elevation path
+    /// for any medium-integrity process able to replace a DLL there.
+    private static bool IsUnderProgramFiles(string directory)
     {
-        (RegistryKey Root, string Path)[] places =
+        foreach (Environment.SpecialFolder folder in new[]
         {
-            (Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-            (Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        };
-
-        foreach ((RegistryKey root, string path) in places)
+            Environment.SpecialFolder.ProgramFiles,
+            Environment.SpecialFolder.ProgramFilesX86,
+        })
         {
-            RegistryKey? uninstall = null;
-            try { uninstall = root.OpenSubKey(path); } catch { }
-            if (uninstall is null) continue;
-
-            string[] names;
-            try { names = uninstall.GetSubKeyNames(); }
-            catch { uninstall.Dispose(); continue; }
-
-            foreach (string name in names)
-            {
-                string? location = null;
-                try
-                {
-                    using RegistryKey? entry = uninstall.OpenSubKey(name);
-                    if (entry?.GetValue("DisplayName") is string display &&
-                        display.Replace(" ", string.Empty).Contains(
-                            "librehardwaremonitor", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Matched with the spaces removed on purpose: the name
-                        // has been written both as one word and as three at
-                        // different times, and will be something else again.
-                        location = entry.GetValue("InstallLocation") as string;
-                    }
-                }
-                catch { }
-
-                if (!string.IsNullOrWhiteSpace(location)) yield return location!;
-            }
-
-            uninstall.Dispose();
+            string root = Environment.GetFolderPath(folder);
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar,
+                                                 Path.AltDirectorySeparatorChar);
+            string prefix = root + Path.DirectorySeparatorChar;
+            if (directory.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
         }
+        return false;
     }
 
-    /// Where a portable copy tends to end up.
-    ///
-    /// LibreHardwareMonitor is usually a zip somebody extracts rather than an
-    /// installer, so for most people the registry knows nothing and this is
-    /// the list that finds it.
-    private static IEnumerable<string> CommonPlaces()
+    /// Refuses junctions and symbolic links between the managed directory and
+    /// the installed helper. A lexical Program Files name must not redirect DLL
+    /// loading into a user-writable target.
+    private static bool HasReparsePointBetween(string directory, string executable)
     {
-        string?[] roots =
+        string stop = Path.GetFullPath(executable).TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        DirectoryInfo? current = new(directory);
+        while (current is not null)
         {
-            Environment.GetEnvironmentVariable("ProgramFiles"),
-            Environment.GetEnvironmentVariable("ProgramFiles(x86)"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs"),
-        };
-
-        foreach (string? root in roots)
-        {
-            if (!string.IsNullOrWhiteSpace(root))
+            try
             {
-                yield return Path.Combine(root!, "LibreHardwareMonitor");
+                if ((current.Attributes & FileAttributes.ReparsePoint) != 0) return true;
             }
+            catch { return true; }
+            string here = current.FullName.TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(here, stop, StringComparison.OrdinalIgnoreCase)) return false;
+            current = current.Parent;
         }
+        return true;
+    }
 
-        // And beside the helper, which is where somebody who unzipped it into
-        // Barometer's own folder would have put it.
-        string? beside = Path.GetDirectoryName(Environment.ProcessPath);
-        if (!string.IsNullOrWhiteSpace(beside))
+    /// Requires the ACL written by Barometer: protected inheritance, an
+    /// Administrators or SYSTEM owner, and no write-like allow rule for a
+    /// medium-integrity user principal.
+    private static bool HasSafeAcl(string directory)
+    {
+        try
         {
-            yield return beside!;
-            yield return Path.Combine(beside!, "LibreHardwareMonitor");
+            DirectorySecurity security = new DirectoryInfo(directory).GetAccessControl(
+                AccessControlSections.Access | AccessControlSections.Owner);
+            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner)
+                return false;
+            SecurityIdentifier administrators = new(
+                WellKnownSidType.BuiltinAdministratorsSid, null);
+            SecurityIdentifier system = new(WellKnownSidType.LocalSystemSid, null);
+            if (!security.AreAccessRulesProtected ||
+                (!owner.Equals(administrators) && !owner.Equals(system))) return false;
+
+            SecurityIdentifier? current = WindowsIdentity.GetCurrent().User;
+            HashSet<SecurityIdentifier> untrusted = new()
+            {
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
+            };
+            if (current is not null) untrusted.Add(current);
+            foreach (FileSystemAccessRule rule in security.GetAccessRules(
+                true, true, typeof(SecurityIdentifier)))
+            {
+                if (rule.AccessControlType == AccessControlType.Allow &&
+                    untrusted.Contains((SecurityIdentifier)rule.IdentityReference) &&
+                    GrantsWriteLike(rule.FileSystemRights)) return false;
+            }
+            return true;
         }
+        catch { return false; }
     }
 
     /// Resolves LibreHardwareMonitor and everything it needs from one folder.

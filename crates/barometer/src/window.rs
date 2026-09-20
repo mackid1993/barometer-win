@@ -47,8 +47,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GW_HWNDPREV, OBJID_WINDOW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     SWP_NOMOVE, SWP_NOSIZE,
-    GetWindowRect, UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, ULW_ALPHA, WM_CLOSE,
-    WM_DESTROY, WM_PAINT, WM_QUERYENDSESSION, WM_SETTINGCHANGE, WM_THEMECHANGED,
+    GetWindowRect, UpdateLayeredWindow, HWND_TOPMOST, PBT_APMRESUMEAUTOMATIC, SWP_NOACTIVATE,
+    ULW_ALPHA, WM_CLOSE, WM_DESTROY, WM_PAINT, WM_POWERBROADCAST, WM_QUERYENDSESSION,
+    WM_SETTINGCHANGE, WM_THEMECHANGED,
     WNDCLASSW,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
@@ -238,6 +239,41 @@ pub fn taskbar_window() -> HWND {
     unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null()) }
 }
 
+/// Waits for Explorer to have built the taskbar and its notification area,
+/// up to `limit`. Returns whether they are there.
+///
+/// The logon task starts Barometer at the same moment Windows starts
+/// Explorer, and it wins that race: on the author's machine the task fired
+/// 35 seconds into the boot, `Shell_TrayWnd` did not exist yet, and the
+/// program exited cleanly with nothing to attach to. Task Scheduler recorded a
+/// result of 0, the trace never opened because it opens after the strip is
+/// made, and the user's report was simply that Barometer did not start at
+/// sign-in. So the strip waits for the taskbar rather than concluding from
+/// one look that there is none.
+///
+/// Both windows, not just the taskbar: the reservation asks the notification
+/// area for room, and the shell creates `TrayNotifyWnd` a moment after its
+/// parent. A taskbar that had to be waited for is also given a further second
+/// to finish laying itself out, so the first icons are not asked of a tray
+/// that is still being built.
+pub fn wait_for_taskbar(limit: std::time::Duration) -> bool {
+    use std::time::{Duration, Instant};
+
+    let present = || crate::tray::notify_rect().is_some();
+    if present() {
+        return true;
+    }
+    let started = Instant::now();
+    while started.elapsed() < limit {
+        std::thread::sleep(Duration::from_millis(250));
+        if present() {
+            std::thread::sleep(Duration::from_secs(1));
+            return true;
+        }
+    }
+    false
+}
+
 pub const CLASS_NAME: &str = "BarometerStrip";
 
 /// Posted to the strip when the taskbar re-lays out, from the thread that
@@ -262,6 +298,11 @@ static TRAY_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// Set when a detail panel opened; the main loop takes it and samples at
 /// once. See `notify_panel_opened`.
 static PANEL_OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set by the resume broadcast and taken by the sampling loop. Windows sends
+/// `PBT_APMRESUMEAUTOMATIC` after both sleep and hibernation, including an
+/// unattended wake; the later user-present event is deliberately ignored so
+/// one resume causes one refresh.
+static POWER_RESUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn take_tray_changed() -> bool {
     TRAY_CHANGED.swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -269,6 +310,16 @@ pub fn take_tray_changed() -> bool {
 
 pub fn take_panel_opened() -> bool {
     PANEL_OPENED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+pub fn take_power_resumed() -> bool {
+    POWER_RESUMED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+fn record_power_event(event: usize) {
+    if event as u32 == PBT_APMRESUMEAUTOMATIC {
+        POWER_RESUMED.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// The strip's window, or null while there is none.
@@ -1360,6 +1411,14 @@ unsafe extern "system" fn window_proc(
             PANEL_OPENED.store(true, std::sync::atomic::Ordering::Release);
             0
         }
+        // Relative Windows waits exclude time spent asleep, so the weather
+        // worker's quarter-hour condition-variable wait can still have almost
+        // a quarter hour left after a nine-day hibernation. Record the resume
+        // edge for the main loop, which owns the modules and can wake it now.
+        WM_POWERBROADCAST if wparam as u32 == PBT_APMRESUMEAUTOMATIC => {
+            record_power_event(wparam);
+            1
+        }
         // The taskbar's own light-or-dark switch, which decides the ink.
         // Both messages, because the shell sends WM_SETTINGCHANGE with
         // "ImmersiveColorSet" for the color change and WM_THEMECHANGED when
@@ -2032,6 +2091,16 @@ unsafe fn show_menu(hwnd: HWND) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resume_from_sleep_or_hibernation_is_reported_once_to_the_sampling_loop() {
+        // Leave no state from another test: this is a one-shot edge, not a
+        // mode that remains on for the rest of the process.
+        while take_power_resumed() {}
+        record_power_event(0x12);
+        assert!(take_power_resumed());
+        assert!(!take_power_resumed());
+    }
 
     /// Every weight the picker offers has to reach the taskbar as a
     /// different face, at a size where faces can differ at all.

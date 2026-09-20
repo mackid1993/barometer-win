@@ -134,7 +134,6 @@ pub enum Id {
     PollSeconds,
     SensorUnit,
     SensorDecimals,
-    LibraryDir,
     InstallLhm,
     RemoveLhm,
     GetPawnIo,

@@ -21,7 +21,9 @@ use std::sync::Mutex;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Instant;
 
-use windows_sys::Win32::Foundation::{BOOLEAN, HANDLE};
+use windows_sys::Win32::Foundation::{
+    BOOLEAN, ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GetAdaptersAddresses, GetBestInterfaceEx, GetExtendedTcpTable, GetIfTable2,
     GetPerTcp6ConnectionEStats, GetPerTcpConnectionEStats, SetPerTcp6ConnectionEStats,
@@ -46,6 +48,17 @@ use windows_sys::Win32::Networking::WinSock::{SOCKADDR, SOCKADDR_IN, SOCKADDR_IN
 const AF_UNSPEC: u32 = 0;
 const AF_INET: u32 = 2;
 const AF_INET6: u32 = 23;
+
+/// Zeroed storage with alignment suitable for the Win32 structures written
+/// into variable-sized byte buffers.
+///
+/// `Vec<u8>` promises alignment of one. Casting its pointer to a structure and
+/// forming a reference is undefined behavior even on an allocator that happens
+/// to return a more aligned address, so every such buffer in this file uses
+/// words and hands APIs its byte length.
+fn aligned_buffer(bytes: usize) -> Vec<u64> {
+    vec![0; bytes.max(1).div_ceil(std::mem::size_of::<u64>())]
+}
 
 /// The interface carrying the default route, and what is known about it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -176,27 +189,29 @@ pub fn connection() -> Option<Connection> {
     // filled, whose size it reported; the linked lists end in null.
     unsafe {
         let flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
-        let mut size: u32 = 16 * 1024;
-        let mut buffer: Vec<u8> = vec![0; size as usize];
-        let mut status = GetAdaptersAddresses(
-            AF_UNSPEC,
-            flags,
-            std::ptr::null(),
-            buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
-            &mut size,
-        );
-        // ERROR_BUFFER_OVERFLOW: the size came back as what is needed.
-        if status == 111 {
-            buffer = vec![0; size as usize];
-            status = GetAdaptersAddresses(
+        let mut bytes: usize = 16 * 1024;
+        let mut buffer = Vec::new();
+        let mut complete = false;
+        for _ in 0..5 {
+            buffer = aligned_buffer(bytes);
+            let mut asked = (buffer.len() * std::mem::size_of::<u64>()) as u32;
+            let status = GetAdaptersAddresses(
                 AF_UNSPEC,
                 flags,
                 std::ptr::null(),
-                buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
-                &mut size,
+                buffer.as_mut_ptr().cast(),
+                &mut asked,
             );
+            if status == 0 {
+                complete = true;
+                break;
+            }
+            if status != ERROR_BUFFER_OVERFLOW {
+                return None;
+            }
+            bytes = asked as usize;
         }
-        if status != 0 {
+        if !complete {
             return None;
         }
 
@@ -210,7 +225,7 @@ pub fn connection() -> Option<Connection> {
             GetBestInterfaceEx(&probe as *const SOCKADDR_IN as *const SOCKADDR, &mut best_index) == 0;
 
         let mut fallback: Option<Connection> = None;
-        let mut adapter = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         while !adapter.is_null() {
             let a = &*adapter;
             adapter = a.Next;
@@ -546,45 +561,10 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
     // SAFETY: tables sized by the API's own report, rows read within that
     // count; the statistics calls take rows this function builds.
     unsafe {
-        // The table is asked for its size and then read, and asked again if
-        // it grew in between - which it does, because connections open while
-        // this is running. The margin that used to stand in for the retry was
-        // a guessed 1024 bytes, so about forty new connections between the
-        // two calls dropped the whole per-process list for that tick.
-        //
-        // The buffer is a vector of u64 rather than of u8 so that it is
-        // aligned for the structure it is read back as. A `Vec<u8>` is
-        // aligned to one, and forming a reference at an address that does not
-        // suit the type is undefined however the address happens to come out.
-        let mut buffer: Vec<u64> = Vec::new();
-        let mut size = 0u32;
-        GetExtendedTcpTable(std::ptr::null_mut(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-        let mut attempts = 0;
-        loop {
-            buffer.clear();
-            buffer.resize((size as usize).div_ceil(8).max(1), 0);
-            let mut asked = (buffer.len() * 8) as u32;
-            let status = GetExtendedTcpTable(
-                buffer.as_mut_ptr().cast(),
-                &mut asked,
-                0,
-                AF_INET,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            );
-            if status == 0 {
-                break;
-            }
-            attempts += 1;
-            // ERROR_INSUFFICIENT_BUFFER, with `asked` now holding what the
-            // table has grown to. Bounded, because a machine opening
-            // connections faster than this loop can allocate has no answer to
-            // give and would otherwise spin.
-            if status != 122 || attempts > 4 {
-                return None;
-            }
-            size = asked;
-        }
+        // The table is asked for its size and then read, and asked again if it
+        // grew in between - which it does as connections open. Both address
+        // families use the same aligned, bounded retry path.
+        let buffer = tcp_table_buffer(AF_INET)?;
         let table = &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
         let rows = table.table.as_ptr();
         for index in 0..table.dwNumEntries as usize {
@@ -657,19 +637,7 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
             all.insert(key, (row.dwOwningPid, data.DataBytesIn, data.DataBytesOut));
         }
 
-        let mut size6 = 0u32;
-        GetExtendedTcpTable(std::ptr::null_mut(), &mut size6, 0, AF_INET6, TCP_TABLE_OWNER_PID_ALL, 0);
-        let mut buffer6: Vec<u8> = vec![0; size6 as usize + 1024];
-        let mut size6 = buffer6.len() as u32;
-        if GetExtendedTcpTable(
-            buffer6.as_mut_ptr().cast(),
-            &mut size6,
-            0,
-            AF_INET6,
-            TCP_TABLE_OWNER_PID_ALL,
-            0,
-        ) == 0
-        {
+        if let Some(buffer6) = tcp_table_buffer(AF_INET6) {
             let table = &*(buffer6.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
             let rows = table.table.as_ptr();
             for index in 0..table.dwNumEntries as usize {
@@ -760,6 +728,51 @@ fn read_connections() -> Option<HashMap<ConnectionKey, (u32, u64, u64)>> {
     Some(all)
 }
 
+/// A variable-sized TCP table for one address family.
+///
+/// Connection churn can grow the table between the size query and the read,
+/// so retry the size the API returns rather than adding a guessed margin.
+/// Bounded so a machine opening connections faster than this loop can allocate
+/// yields no sample instead of spinning forever.
+///
+/// # Safety
+/// The returned bytes contain the table shape requested from Windows and are
+/// aligned for the typed table reference the caller forms from them.
+unsafe fn tcp_table_buffer(family: u32) -> Option<Vec<u64>> {
+    let mut asked = 0u32;
+    let status = GetExtendedTcpTable(
+        std::ptr::null_mut(),
+        &mut asked,
+        0,
+        family,
+        TCP_TABLE_OWNER_PID_ALL,
+        0,
+    );
+    if status != ERROR_INSUFFICIENT_BUFFER || asked == 0 {
+        return None;
+    }
+    for _ in 0..5 {
+        let mut buffer = aligned_buffer(asked as usize);
+        let mut available = (buffer.len() * std::mem::size_of::<u64>()) as u32;
+        let status = GetExtendedTcpTable(
+            buffer.as_mut_ptr().cast(),
+            &mut available,
+            0,
+            family,
+            TCP_TABLE_OWNER_PID_ALL,
+            0,
+        );
+        if status == 0 {
+            return Some(buffer);
+        }
+        if status != ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+        asked = available;
+    }
+    None
+}
+
 /// The machine's addresses as the internet sees them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PublicIp {
@@ -794,6 +807,15 @@ fn address_in(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ffi_buffers_are_eight_byte_aligned_and_hold_every_requested_byte() {
+        for bytes in [0usize, 1, 7, 8, 9, 16_385] {
+            let buffer = aligned_buffer(bytes);
+            assert_eq!((buffer.as_ptr() as usize) % 8, 0);
+            assert!(buffer.len() * 8 >= bytes.max(1));
+        }
+    }
 
     #[test]
     fn an_ipify_answer_is_the_address_in_it_and_nothing_else_is() {

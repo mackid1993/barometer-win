@@ -197,13 +197,6 @@ pub struct Settings {
     /// week, and a machine that is restarted daily would otherwise make seven.
     /// None means it has never run, which is treated as due.
     pub last_update_check: Option<u64>,
-    /// Where LibreHardwareMonitor was found or put.
-    ///
-    /// This is a machine fact in a file that roams: %APPDATA% follows the user
-    /// to their other PC, where this path may name nothing. The caller checks
-    /// the directory rather than trusting it, which it has to do anyway - LHM
-    /// is frequently run portable from a zip and gets moved.
-    pub library_directory: Option<String>,
 }
 
 impl Default for Settings {
@@ -229,7 +222,6 @@ impl Default for Settings {
             check_for_updates: true,
             skipped_update: None,
             last_update_check: None,
-            library_directory: None,
         }
     }
 }
@@ -677,7 +669,6 @@ fn encode(settings: &Settings) -> Value {
         "checkForUpdates": settings.check_for_updates,
         "skippedUpdate": optional(&settings.skipped_update),
         "lastUpdateCheck": settings.last_update_check.map(Value::from).unwrap_or(Value::Null),
-        "libraryDirectory": optional(&settings.library_directory),
     })
 }
 
@@ -735,7 +726,6 @@ fn decode(document: &Value) -> Settings {
         last_update_check: number(root, "lastUpdateCheck")
             .filter(|seconds| *seconds >= 0.0)
             .map(|seconds| seconds as u64),
-        library_directory: text(root, "libraryDirectory"),
     }
 }
 
@@ -1082,7 +1072,6 @@ mod tests {
             check_for_updates: false,
             skipped_update: Some("1.4.0".into()),
             last_update_check: Some(1_757_000_000),
-            library_directory: Some(r"D:\Tools\LibreHardwareMonitor".into()),
         }
     }
 

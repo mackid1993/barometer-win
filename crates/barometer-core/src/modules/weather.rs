@@ -41,16 +41,44 @@ const LOCATE_DOUBLINGS: u32 = 5;
 #[derive(Default)]
 struct Shared {
     current: Option<CurrentWeather>,
+    /// Wall-clock time of the last successful fetch. The conditions can be
+    /// byte-for-byte unchanged while the fetch itself is new, and the panel's
+    /// "Updated" line must describe the request rather than a value change.
+    refreshed_at_unix: Option<i64>,
     error: Option<String>,
     /// Where the worker decided it is, when nothing was saved. Published so
     /// the settings pane can offer it as the first entry in the location list.
     located: Option<Location>,
 }
 
+/// Stop state and refresh generation guarded by the worker's condition
+/// variable mutex. A notification alone is not state: if it arrives while an
+/// HTTP request is in flight, nobody is waiting and it disappears. Advancing
+/// the generation makes that request remain pending until a pass begins after
+/// it.
+#[derive(Default)]
+struct Control {
+    stopped: bool,
+    generation: u64,
+}
+
+impl Control {
+    fn request_refresh(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn can_wait_after(&self, fetched_generation: u64) -> bool {
+        !self.stopped && self.generation == fetched_generation
+    }
+}
+
 pub struct WeatherModule {
     shared: Arc<Mutex<Shared>>,
-    stop: Arc<(Mutex<bool>, Condvar)>,
+    stop: Arc<(Mutex<Control>, Condvar)>,
     running: Arc<AtomicBool>,
+    /// Whether a strip column or an enabled stack can show weather. Network
+    /// work is demand-driven: a disabled module must not geolocate the user.
+    demand: Arc<AtomicBool>,
     /// What the worker is to fetch, shared with it rather than handed over
     /// at spawn: the place, the units and the interval are all settings, and
     /// settings change while the worker is running.
@@ -67,18 +95,20 @@ impl WeatherModule {
     /// which is better than a module that silently is not there.
     pub fn new(settings: WeatherSettings) -> WeatherModule {
         let shared = Arc::new(Mutex::new(Shared::default()));
-        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let stop = Arc::new((Mutex::new(Control::default()), Condvar::new()));
         let running = Arc::new(AtomicBool::new(false));
+        let demand = Arc::new(AtomicBool::new(false));
 
         let wanted = Arc::new(Mutex::new(settings.clone()));
-        // No saved location means guess from the IP address, on the worker
-        // rather than here: locating is a network call, and doing it on the
-        // startup path delays the taskbar readout appearing at all.
-        if settings.primary_location().is_some() || settings.uses_current_location {
-            start(&running, &shared, &stop, &wanted);
+        WeatherModule {
+            shared,
+            stop,
+            running,
+            demand,
+            wanted,
+            settings,
+            readout: Readout::unavailable(),
         }
-
-        WeatherModule { shared, stop, running, wanted, settings, readout: Readout::unavailable() }
     }
 
     /// The location being watched, for the settings pane.
@@ -103,11 +133,17 @@ impl WeatherModule {
 
     /// Everything the detail panel shows, taken in one go.
     pub fn observe(&self) -> Observation {
+        let (current, refreshed_at_unix, error) = self
+            .shared
+            .lock()
+            .map(|shared| (shared.current.clone(), shared.refreshed_at_unix, shared.error.clone()))
+            .unwrap_or_default();
         Observation {
             location: self.location(),
             units: self.settings.units,
-            current: self.current(),
-            error: self.error(),
+            current,
+            refreshed_at_unix,
+            error,
             refresh_minutes: self.settings.clamped_refresh_minutes(),
         }
     }
@@ -124,6 +160,7 @@ pub struct Observation {
     pub location: Option<Location>,
     pub units: crate::weather::models::WeatherUnits,
     pub current: Option<CurrentWeather>,
+    pub refreshed_at_unix: Option<i64>,
     pub error: Option<String>,
     /// How often the strip refreshes, which is how long a forecast is
     /// trusted for.
@@ -134,18 +171,21 @@ pub struct Observation {
 fn start(
     running: &Arc<AtomicBool>,
     shared: &Arc<Mutex<Shared>>,
-    stop: &Arc<(Mutex<bool>, Condvar)>,
+    stop: &Arc<(Mutex<Control>, Condvar)>,
+    demand: &Arc<AtomicBool>,
     wanted: &Arc<Mutex<WeatherSettings>>,
-) {
+) -> bool {
     if running.swap(true, Ordering::AcqRel) {
-        return;
+        return false;
     }
     thread::spawn({
         let shared = Arc::clone(shared);
         let stop = Arc::clone(stop);
+        let demand = Arc::clone(demand);
         let wanted = Arc::clone(wanted);
-        move || worker(shared, stop, wanted)
+        move || worker(shared, stop, demand, wanted)
     });
+    true
 }
 
 /// Fetch, publish, wait. Waits on a condition variable rather than sleeping so
@@ -159,7 +199,8 @@ fn start(
 /// "next pass" mean "now".
 fn worker(
     shared: Arc<Mutex<Shared>>,
-    stop: Arc<(Mutex<bool>, Condvar)>,
+    stop: Arc<(Mutex<Control>, Condvar)>,
+    demand: Arc<AtomicBool>,
     wanted: Arc<Mutex<WeatherSettings>>,
 ) {
     let (lock, signal) = &*stop;
@@ -172,6 +213,20 @@ fn worker(
     // the wait below is scaled by.
     let mut refusals: u32 = 0;
     loop {
+        // A request already present is satisfied by the pass about to begin.
+        // A request that arrives after this snapshot stays distinguishable at
+        // the wait below and sends the worker around again without sleeping.
+        let generation = {
+            let Ok(mut control) = lock.lock() else { return };
+            while !control.stopped && !demand.load(Ordering::Acquire) {
+                let Ok(woken) = signal.wait(control) else { return };
+                control = woken;
+            }
+            if control.stopped {
+                return;
+            }
+            control.generation
+        };
         let settings = wanted.lock().map(|settings| settings.clone()).unwrap_or_default();
         let units = settings.units;
         let interval = Duration::from_secs(u64::from(settings.clamped_refresh_minutes()) * 60);
@@ -207,25 +262,28 @@ fn worker(
             // Nowhere to ask about yet. Wait rather than spinning on a
             // network that is not there; a location added in the settings
             // wakes this immediately either way.
-            let Ok(stopped) = lock.lock() else { return };
-            if *stopped {
+            let Ok(control) = lock.lock() else { return };
+            if control.stopped {
                 return;
+            }
+            if !control.can_wait_after(generation) {
+                continue;
             }
             let woken = if settings.uses_current_location {
                 // A minute after the first refusal and twice as long after each
                 // since - see LOCATE_DOUBLINGS. The count already includes the
                 // refusal just suffered, so the first wait is the base one.
                 let wait = RETRY * 2u32.pow(refusals.saturating_sub(1).min(LOCATE_DOUBLINGS));
-                signal.wait_timeout(stopped, wait).map(|(guard, _)| guard).map_err(|_| ())
+                signal.wait_timeout(control, wait).map(|(guard, _)| guard).map_err(|_| ())
             } else {
                 // No saved location and no address lookup is not a failure
                 // to keep retrying: it is the user saying they want no
                 // weather. There is nothing a timer could discover, so this
                 // waits for somebody to add a location.
-                signal.wait(stopped).map_err(|_| ())
+                signal.wait(control).map_err(|_| ())
             };
             let Ok(guard) = woken else { return };
-            if *guard {
+            if guard.stopped {
                 return;
             }
             continue;
@@ -235,6 +293,10 @@ fn worker(
             Ok(current) => {
                 if let Ok(mut shared) = shared.lock() {
                     shared.current = Some(current);
+                    shared.refreshed_at_unix = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
                     shared.error = None;
                 }
                 interval
@@ -266,13 +328,15 @@ fn worker(
             continue;
         }
 
-        let Ok(mut stopped) = lock.lock() else { return };
-        if *stopped {
+        let Ok(control) = lock.lock() else { return };
+        if control.stopped {
             return;
         }
-        let Ok((guard, _)) = signal.wait_timeout(stopped, wait) else { return };
-        stopped = guard;
-        if *stopped {
+        if !control.can_wait_after(generation) {
+            continue;
+        }
+        let Ok((control, _)) = signal.wait_timeout(control, wait) else { return };
+        if control.stopped {
             return;
         }
     }
@@ -297,8 +361,8 @@ impl Drop for WeatherModule {
             return;
         }
         let (lock, signal) = &*self.stop;
-        if let Ok(mut stopped) = lock.lock() {
-            *stopped = true;
+        if let Ok(mut control) = lock.lock() {
+            control.stopped = true;
         }
         signal.notify_all();
     }
@@ -331,32 +395,53 @@ impl Module for WeatherModule {
         if elsewhere || rescaled {
             if let Ok(mut shared) = self.shared.lock() {
                 shared.current = None;
+                shared.refreshed_at_unix = None;
                 shared.error = None;
             }
             self.readout = Readout::unavailable();
         }
         // A module that had nowhere to ask about has a worker only once it
         // does; one that already has a worker is woken instead.
-        if self.settings.primary_location().is_some() || self.settings.uses_current_location {
-            start(&self.running, &self.shared, &self.stop, &self.wanted);
+        let started = if self.demand.load(Ordering::Acquire)
+            && (self.settings.primary_location().is_some() || self.settings.uses_current_location)
+        {
+            start(&self.running, &self.shared, &self.stop, &self.demand, &self.wanted)
+        } else {
+            false
+        };
+        if !started {
+            self.refresh();
         }
-        self.refresh();
+    }
+
+    fn shown(&mut self, shown: bool) {
+        self.demand.store(shown, Ordering::Release);
+        let started = shown
+            && (self.settings.primary_location().is_some() || self.settings.uses_current_location)
+            && start(&self.running, &self.shared, &self.stop, &self.demand, &self.wanted);
+        // Wakes a running worker both when demand appears and when it is
+        // withdrawn. In the latter case the worker parks before another fetch.
+        if !started {
+            self.refresh();
+        }
     }
 
     /// Wakes the worker out of its wait, which sends it round its loop and
     /// back to the provider at once. The panel's Refresh re-fetches its own
     /// forecast; this is what makes the strip's reading follow.
     ///
-    /// The lock is held while signaling so the wake cannot fall between the
-    /// worker checking its flag and starting to wait, where it would be
-    /// lost; the worker only ever holds that lock for the length of a check.
+    /// The generation is the durable part. The lock is held while signaling
+    /// so a worker that is about to wait either sees the new generation first
+    /// or is already waiting and receives the notification.
     fn refresh(&mut self) {
         if !self.running.load(Ordering::Acquire) {
             return;
         }
         let (lock, signal) = &*self.stop;
-        let _held = lock.lock();
-        signal.notify_all();
+        if let Ok(mut control) = lock.lock() {
+            control.request_refresh();
+            signal.notify_all();
+        }
     }
 
     fn stack_value(
@@ -488,6 +573,12 @@ mod tests {
     }
 
     #[test]
+    fn constructing_disabled_weather_does_not_start_a_location_request() {
+        let module = WeatherModule::new(WeatherSettings::default());
+        assert!(!module.running.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn a_unit_chosen_in_the_settings_reaches_the_module_and_the_reading_it_scaled_is_dropped() {
         let mut module = WeatherModule::new(quiet(WeatherUnits::IMPERIAL, 15).weather);
         assert_eq!(module.observe().units.temperature, TemperatureUnit::Fahrenheit);
@@ -506,6 +597,15 @@ mod tests {
         assert_eq!(module.observe().units.temperature, TemperatureUnit::Celsius);
         assert_eq!(module.observe().current, None);
         assert!(module.readout().unavailable);
+    }
+
+    #[test]
+    fn a_refresh_raised_during_a_fetch_remains_pending_after_that_fetch() {
+        let mut control = Control::default();
+        let generation_being_fetched = control.generation;
+        control.request_refresh();
+        assert!(!control.can_wait_after(generation_being_fetched));
+        assert!(control.can_wait_after(control.generation));
     }
 
     #[test]
