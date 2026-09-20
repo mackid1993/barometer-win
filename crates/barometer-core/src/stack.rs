@@ -758,16 +758,15 @@ impl StacksSettings {
     /// builds is built for all of them. Saying yes too often costs a clone;
     /// saying no wrongly costs a reading.
     pub fn needs_the_sensor_list(&self) -> bool {
-        self.stacks.iter().any(|stack| {
-            stack.metrics.iter().any(|entry| {
-                matches!(
-                    entry.metric,
-                    StackMetric::Sensor(_)
-                        | StackMetric::GpuPower
-                        | StackMetric::GpuTemperature
-                )
-            })
-        })
+        self.stacks.iter().any(stack_needs_sensor_list)
+    }
+
+    /// Whether a stack that is actually on the strip needs sensor-only data.
+    /// Settings still use [`needs_the_sensor_list`] so a disabled stack can be
+    /// edited with its real labels, but it must not keep the helper polling at
+    /// the foreground rate while nothing displays it.
+    pub fn enabled_needs_the_sensor_list(&self) -> bool {
+        self.stacks.iter().any(|stack| stack.is_enabled && stack_needs_sensor_list(stack))
     }
 
     /// Modules that must keep sampling for the enabled stacks.
@@ -796,6 +795,15 @@ impl StacksSettings {
         modules.dedup();
         modules
     }
+}
+
+fn stack_needs_sensor_list(stack: &StackSettings) -> bool {
+    stack.metrics.iter().any(|entry| {
+        matches!(
+            entry.metric,
+            StackMetric::Sensor(_) | StackMetric::GpuPower | StackMetric::GpuTemperature
+        )
+    })
 }
 
 #[cfg(test)]
@@ -955,12 +963,14 @@ mod tests {
         let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
         stack.metrics = vec![StackEntry::new(StackMetric::Sensor("/intelcpu/0/temperature/18".into()))];
         assert!(stacks.needs_the_sensor_list());
+        assert!(stacks.enabled_needs_the_sensor_list());
 
         // A disabled stack still counts: the values a tick builds are built
         // for every stack, not only the shown ones.
         let stack = stacks.stacks.iter_mut().find(|s| s.id == id).expect("just added");
         stack.is_enabled = false;
         assert!(stacks.needs_the_sensor_list());
+        assert!(!stacks.enabled_needs_the_sensor_list());
 
         // And it goes with the stack.
         stacks.remove(id);

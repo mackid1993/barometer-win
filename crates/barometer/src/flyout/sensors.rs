@@ -181,10 +181,17 @@ impl SensorsSnapshot {
     /// Takes one snapshot, as the sensors module's worker publishes it: the
     /// readings, or the reason there are none.
     pub fn observe(&mut self, sensors: &[Sensor], error: Option<&SensorError>) {
+        self.observe_owned(sensors.to_vec(), error.cloned());
+    }
+
+    /// The strip already receives an owned list from the module. Consuming it
+    /// avoids cloning every sensor's identifier, name and hardware string a
+    /// second time on every sample.
+    pub fn observe_owned(&mut self, sensors: Vec<Sensor>, error: Option<SensorError>) {
         self.sampled = true;
-        self.sensors = sensors.to_vec();
-        self.error = error.cloned();
-        self.history.observe(sensors);
+        self.history.observe(&sensors);
+        self.sensors = sensors;
+        self.error = error;
     }
 
     /// The header's second line: how many of each kind, or why there are

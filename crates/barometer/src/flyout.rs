@@ -67,6 +67,61 @@ pub struct Anchor {
     pub column: PxRect,
 }
 
+/// The expensive detail data the currently open panel can actually display.
+/// A stack can switch module tabs without waking the strip, so it conservatively
+/// keeps every collector available while an ordinary module panel names one.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct DetailDemand {
+    pub cpu: bool,
+    pub gpu: bool,
+    pub memory: bool,
+    pub disks: bool,
+    pub network: bool,
+    pub sensors: bool,
+    pub sensor_panel: bool,
+}
+
+impl DetailDemand {
+    pub fn for_item(item: Option<StripItem>) -> DetailDemand {
+        match item {
+            Some(StripItem::Stack(_)) => DetailDemand {
+                cpu: true,
+                gpu: true,
+                memory: true,
+                disks: true,
+                network: true,
+                sensors: true,
+                sensor_panel: true,
+            },
+            Some(StripItem::Module(ModuleId::Cpu)) => DetailDemand { cpu: true, ..Default::default() },
+            Some(StripItem::Module(ModuleId::Gpu)) => {
+                DetailDemand { gpu: true, sensors: true, ..Default::default() }
+            }
+            Some(StripItem::Module(ModuleId::Memory)) => {
+                DetailDemand { memory: true, ..Default::default() }
+            }
+            Some(StripItem::Module(ModuleId::Disks)) => {
+                DetailDemand { disks: true, ..Default::default() }
+            }
+            Some(StripItem::Module(ModuleId::Network)) => {
+                DetailDemand { network: true, ..Default::default() }
+            }
+            Some(StripItem::Module(ModuleId::Sensors)) => {
+                DetailDemand { sensors: true, sensor_panel: true, ..Default::default() }
+            }
+            Some(StripItem::Module(ModuleId::Weather)) | None => DetailDemand::default(),
+        }
+    }
+
+    pub fn processes(self) -> bool {
+        self.cpu || self.memory || self.network
+    }
+
+    pub fn summary(self) -> bool {
+        self.cpu || self.memory
+    }
+}
+
 /// What a panel asked the application to do.
 ///
 /// Returned to the strip's thread rather than acted on here, for the same
@@ -476,6 +531,10 @@ impl Flyout {
         self.shared.open_item.lock().ok().and_then(|item| *item)
     }
 
+    pub fn detail_demand(&self) -> DetailDemand {
+        DetailDemand::for_item(self.open_item())
+    }
+
     /// Which module's panel is showing. None while a stack's panel is the
     /// one open, even though that panel is showing some module's content:
     /// the strip lights the column that was clicked, not its source.
@@ -503,5 +562,40 @@ impl Drop for Flyout {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod demand_tests {
+    use super::*;
+
+    #[test]
+    fn an_ordinary_panel_requests_only_the_collectors_it_can_show() {
+        assert_eq!(
+            DetailDemand::for_item(Some(StripItem::Module(ModuleId::Weather))),
+            DetailDemand::default()
+        );
+        let cpu = DetailDemand::for_item(Some(StripItem::Module(ModuleId::Cpu)));
+        assert!(cpu.cpu && cpu.processes() && cpu.summary());
+        assert!(!cpu.gpu && !cpu.memory && !cpu.disks && !cpu.network && !cpu.sensors);
+        let gpu = DetailDemand::for_item(Some(StripItem::Module(ModuleId::Gpu)));
+        assert!(gpu.gpu && gpu.sensors);
+        assert!(!gpu.sensor_panel);
+        assert!(!gpu.processes() && !gpu.summary());
+    }
+
+    #[test]
+    fn a_stack_keeps_every_collector_ready_for_its_tabs() {
+        let stack = DetailDemand::for_item(Some(StripItem::Stack(7)));
+        assert!(
+            stack.cpu
+                && stack.gpu
+                && stack.memory
+                && stack.disks
+                && stack.network
+                && stack.sensors
+                && stack.sensor_panel
+        );
+        assert!(stack.processes() && stack.summary());
     }
 }

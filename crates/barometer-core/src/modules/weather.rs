@@ -16,9 +16,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::module::{Module, ModuleId, Readout};
+use crate::weather::air::{fetch_air, AirQuality};
 use crate::weather::badge::Condition;
 use crate::weather::client::{self, CurrentWeather, WeatherError};
-use crate::weather::models::{Location, WeatherSettings};
+use crate::weather::detail::{fetch_detail, DetailForecast};
+use crate::weather::models::{Location, WeatherSettings, WeatherUnits};
 
 /// How long the worker waits before giving up on a location it cannot reach.
 ///
@@ -41,6 +43,14 @@ const LOCATE_DOUBLINGS: u32 = 5;
 #[derive(Default)]
 struct Shared {
     current: Option<CurrentWeather>,
+    /// Detailed data is fetched by the always-running weather worker, not by
+    /// the flyout after it opens, so every weather view shares one warm cache.
+    forecast: Option<DetailForecast>,
+    air: Option<AirQuality>,
+    forecast_for: Option<String>,
+    forecast_units: Option<WeatherUnits>,
+    forecast_error: Option<String>,
+    forecast_fetching: bool,
     /// Wall-clock time of the last successful fetch. The conditions can be
     /// byte-for-byte unchanged while the fetch itself is new, and the panel's
     /// "Updated" line must describe the request rather than a value change.
@@ -118,7 +128,12 @@ impl WeatherModule {
         self.settings
             .primary_location()
             .cloned()
-            .or_else(|| self.shared.lock().ok().and_then(|shared| shared.located.clone()))
+            .or_else(|| {
+                self.settings
+                    .uses_current_location
+                    .then(|| self.shared.lock().ok().and_then(|shared| shared.located.clone()))
+                    .flatten()
+            })
     }
 
     /// The full observation, for the detail panel.
@@ -133,15 +148,43 @@ impl WeatherModule {
 
     /// Everything the detail panel shows, taken in one go.
     pub fn observe(&self) -> Observation {
-        let (current, refreshed_at_unix, error) = self
+        let (
+            current,
+            forecast,
+            air,
+            forecast_for,
+            forecast_units,
+            forecast_error,
+            forecast_fetching,
+            refreshed_at_unix,
+            error,
+        ) = self
             .shared
             .lock()
-            .map(|shared| (shared.current.clone(), shared.refreshed_at_unix, shared.error.clone()))
+            .map(|shared| {
+                (
+                    shared.current.clone(),
+                    shared.forecast.clone(),
+                    shared.air.clone(),
+                    shared.forecast_for.clone(),
+                    shared.forecast_units,
+                    shared.forecast_error.clone(),
+                    shared.forecast_fetching,
+                    shared.refreshed_at_unix,
+                    shared.error.clone(),
+                )
+            })
             .unwrap_or_default();
         Observation {
             location: self.location(),
             units: self.settings.units,
             current,
+            forecast,
+            air,
+            forecast_for,
+            forecast_units,
+            forecast_error,
+            forecast_fetching,
             refreshed_at_unix,
             error,
             refresh_minutes: self.settings.clamped_refresh_minutes(),
@@ -160,6 +203,12 @@ pub struct Observation {
     pub location: Option<Location>,
     pub units: crate::weather::models::WeatherUnits,
     pub current: Option<CurrentWeather>,
+    pub forecast: Option<DetailForecast>,
+    pub air: Option<AirQuality>,
+    pub forecast_for: Option<String>,
+    pub forecast_units: Option<WeatherUnits>,
+    pub forecast_error: Option<String>,
+    pub forecast_fetching: bool,
     pub refreshed_at_unix: Option<i64>,
     pub error: Option<String>,
     /// How often the strip refreshes, which is how long a forecast is
@@ -185,6 +234,26 @@ fn start(
         let wanted = Arc::clone(wanted);
         move || worker(shared, stop, demand, wanted)
     });
+    true
+}
+
+/// Runs a publication only while this worker pass is still the requested one.
+/// Holding the control lock through the publication makes invalidation and
+/// cache clearing in `configure` ordered against an in-flight result.
+fn with_current_pass(
+    lock: &Mutex<Control>,
+    demand: &AtomicBool,
+    generation: u64,
+    publish: impl FnOnce(),
+) -> bool {
+    let Ok(control) = lock.lock() else { return false };
+    if control.stopped
+        || control.generation != generation
+        || !demand.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    publish();
     true
 }
 
@@ -233,17 +302,28 @@ fn worker(
 
         let saved = settings.primary_location().cloned();
         if saved.is_none() && settings.uses_current_location && by_address.is_none() {
-            match client::locate_by_ip() {
+            let located = client::locate_by_ip_while(|| {
+                with_current_pass(lock, &demand, generation, || {})
+            });
+            match located {
                 Ok(found) => {
-                    if let Ok(mut shared) = shared.lock() {
-                        shared.located = Some(found.clone());
+                    if !with_current_pass(lock, &demand, generation, || {
+                        if let Ok(mut shared) = shared.lock() {
+                            shared.located = Some(found.clone());
+                        }
+                    }) {
+                        continue;
                     }
                     by_address = Some(found);
                     refusals = 0;
                 }
                 Err(why) => {
-                    if let Ok(mut shared) = shared.lock() {
-                        shared.error = Some(why.to_string());
+                    if !with_current_pass(lock, &demand, generation, || {
+                        if let Ok(mut shared) = shared.lock() {
+                            shared.error = Some(why.to_string());
+                        }
+                    }) {
+                        continue;
                     }
                     refusals = refusals.saturating_add(1);
                 }
@@ -289,28 +369,72 @@ fn worker(
             continue;
         };
 
+        if !with_current_pass(lock, &demand, generation, || {
+            if let Ok(mut shared) = shared.lock() {
+                shared.forecast_fetching = true;
+                shared.forecast_error = None;
+            }
+        }) {
+            continue;
+        }
         let wait = match client::fetch(&here, units) {
             Ok(current) => {
-                if let Ok(mut shared) = shared.lock() {
-                    shared.current = Some(current);
-                    shared.refreshed_at_unix = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()
-                        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
-                    shared.error = None;
+                if !with_current_pass(lock, &demand, generation, || {
+                    if let Ok(mut shared) = shared.lock() {
+                        shared.current = Some(current);
+                        shared.refreshed_at_unix = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
+                        shared.error = None;
+                    }
+                }) {
+                    continue;
+                }
+                // Each blocking request is its own cancellation boundary. If
+                // settings or demand changed during current conditions, no
+                // further location-bearing request is started for this pass.
+                if !with_current_pass(lock, &demand, generation, || {}) {
+                    continue;
+                }
+                let detailed = fetch_detail(&here, units).map_err(|why| why.to_string());
+                if !with_current_pass(lock, &demand, generation, || {}) {
+                    continue;
+                }
+                let air = fetch_air(&here).ok().filter(|air| !air.is_empty());
+                if !with_current_pass(lock, &demand, generation, || {
+                    if let Ok(mut shared) = shared.lock() {
+                        match detailed {
+                            Ok(forecast) => {
+                                shared.forecast = Some(forecast);
+                                shared.air = air;
+                                shared.forecast_for = Some(here.id.clone());
+                                shared.forecast_units = Some(units);
+                                shared.forecast_error = None;
+                            }
+                            Err(why) => shared.forecast_error = Some(why),
+                        }
+                        shared.forecast_fetching = false;
+                    }
+                }) {
+                    continue;
                 }
                 interval
             }
             Err(why) => {
-                if let Ok(mut shared) = shared.lock() {
-                    // The last good reading is kept. Weather, unlike a
-                    // temperature sensor, is still roughly true a few minutes
-                    // later, and blanking it every time a laptop changes
-                    // network would leave the strip mostly empty.
-                    shared.error = Some(match why {
-                        WeatherError::NoLocation => "no location set".to_string(),
-                        other => other.to_string(),
-                    });
+                if !with_current_pass(lock, &demand, generation, || {
+                    if let Ok(mut shared) = shared.lock() {
+                        // The last good reading is kept. Weather, unlike a
+                        // temperature sensor, is still roughly true a few
+                        // minutes later.
+                        shared.error = Some(match why {
+                            WeatherError::NoLocation => "no location set".to_string(),
+                            other => other.to_string(),
+                        });
+                        shared.forecast_fetching = false;
+                    }
+                }) {
+                    continue;
                 }
                 RETRY
             }
@@ -387,30 +511,47 @@ impl Module for WeatherModule {
         }
         let elsewhere = weather.primary_location().map(|place| &place.id)
             != self.settings.primary_location().map(|place| &place.id);
+        let auto_location_changed = weather.uses_current_location
+            != self.settings.uses_current_location
+            && (weather.primary_location().is_none()
+                || self.settings.primary_location().is_none());
         let rescaled = weather.units != self.settings.units;
         self.settings = weather.clone();
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = weather.clone();
         }
-        if elsewhere || rescaled {
+        let was_running = self.running.load(Ordering::Acquire);
+        // Invalidate the worker generation before clearing the cache. Worker
+        // publications hold this same control lock, so either an old result
+        // lands first and is then cleared, or it sees the new generation and
+        // is discarded.
+        if was_running {
+            self.refresh();
+        }
+        if elsewhere || auto_location_changed || rescaled {
             if let Ok(mut shared) = self.shared.lock() {
                 shared.current = None;
+                shared.forecast = None;
+                shared.air = None;
+                shared.forecast_for = None;
+                shared.forecast_units = None;
+                shared.forecast_error = None;
+                shared.forecast_fetching = false;
                 shared.refreshed_at_unix = None;
                 shared.error = None;
+                if !weather.uses_current_location {
+                    shared.located = None;
+                }
             }
             self.readout = Readout::unavailable();
         }
         // A module that had nowhere to ask about has a worker only once it
         // does; one that already has a worker is woken instead.
-        let started = if self.demand.load(Ordering::Acquire)
+        if !was_running
+            && self.demand.load(Ordering::Acquire)
             && (self.settings.primary_location().is_some() || self.settings.uses_current_location)
         {
-            start(&self.running, &self.shared, &self.stop, &self.demand, &self.wanted)
-        } else {
-            false
-        };
-        if !started {
-            self.refresh();
+            start(&self.running, &self.shared, &self.stop, &self.demand, &self.wanted);
         }
     }
 
@@ -423,6 +564,11 @@ impl Module for WeatherModule {
         // withdrawn. In the latter case the worker parks before another fetch.
         if !started {
             self.refresh();
+        }
+        if !shown {
+            if let Ok(mut shared) = self.shared.lock() {
+                shared.forecast_fetching = false;
+            }
         }
     }
 
@@ -606,6 +752,79 @@ mod tests {
         control.request_refresh();
         assert!(!control.can_wait_after(generation_being_fetched));
         assert!(control.can_wait_after(control.generation));
+    }
+
+    #[test]
+    fn an_invalidated_or_hidden_pass_cannot_publish() {
+        let control = Mutex::new(Control::default());
+        let demand = AtomicBool::new(true);
+        let published = AtomicBool::new(false);
+        assert!(with_current_pass(&control, &demand, 0, || {
+            published.store(true, Ordering::Release);
+        }));
+        assert!(published.load(Ordering::Acquire));
+
+        published.store(false, Ordering::Release);
+        control.lock().unwrap().request_refresh();
+        assert!(!with_current_pass(&control, &demand, 0, || {
+            published.store(true, Ordering::Release);
+        }));
+        assert!(!published.load(Ordering::Acquire));
+
+        let current = control.lock().unwrap().generation;
+        demand.store(false, Ordering::Release);
+        assert!(!with_current_pass(&control, &demand, current, || {
+            published.store(true, Ordering::Release);
+        }));
+        assert!(!published.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn detailed_weather_state_is_part_of_the_shared_observation() {
+        let module = WeatherModule::new(quiet(WeatherUnits::IMPERIAL, 15).weather);
+        if let Ok(mut shared) = module.shared.lock() {
+            shared.air = Some(AirQuality {
+                us_aqi: Some(42),
+                pm2_5: Some(8.0),
+                pm10: None,
+                ozone: None,
+            });
+            shared.forecast_for = Some("austin".into());
+            shared.forecast_units = Some(WeatherUnits::IMPERIAL);
+            shared.forecast_error = Some("detail timeout".into());
+            shared.forecast_fetching = true;
+        }
+        let observed = module.observe();
+        assert_eq!(observed.forecast_for.as_deref(), Some("austin"));
+        assert_eq!(observed.forecast_units, Some(WeatherUnits::IMPERIAL));
+        assert_eq!(observed.air.and_then(|air| air.us_aqi), Some(42));
+        assert_eq!(observed.forecast_error.as_deref(), Some("detail timeout"));
+        assert!(observed.forecast_fetching);
+    }
+
+    #[test]
+    fn turning_off_current_location_clears_the_guessed_weather() {
+        let mut initial = quiet(WeatherUnits::IMPERIAL, 15);
+        initial.weather.uses_current_location = true;
+        let mut module = WeatherModule::new(initial.weather);
+        if let Ok(mut shared) = module.shared.lock() {
+            shared.located = Some(Location {
+                id: "guessed".into(),
+                name: "Guessed".into(),
+                admin: None,
+                country: "US".into(),
+                latitude: "1".into(),
+                longitude: "2".into(),
+                time_zone: "UTC".into(),
+            });
+            shared.current = Some(CurrentWeather {
+                temperature: Some(70.0),
+                ..CurrentWeather::default()
+            });
+        }
+        module.configure(&quiet(WeatherUnits::IMPERIAL, 15));
+        assert_eq!(module.location(), None);
+        assert_eq!(module.observe().current, None);
     }
 
     #[test]

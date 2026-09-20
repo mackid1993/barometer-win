@@ -16,9 +16,10 @@
 // dismissal logic would then have to track, so here the day is a page the
 // panel turns to and turns back from.
 //
-// The strip's reading arrives through a feed; the ten-day forecast is this
-// content's own business, fetched on a thread of its own the first time the
-// panel opens and again when it is stale, never on the panel's thread.
+// The strip's current reading and the ten-day forecast arrive through one
+// feed. The weather module prefetches both on its background worker, so this
+// panel never turns opening into a network request and every weather view
+// shares the same cache.
 
 pub mod chart;
 pub mod clock;
@@ -28,14 +29,12 @@ mod paint;
 pub mod sky;
 
 use std::sync::{Arc, Mutex};
-use std::thread;
 
-use barometer_core::weather::air::{self, fetch_air, AirQuality};
+use barometer_core::weather::air::{self, AirQuality};
 use barometer_core::weather::badge::Condition;
 use barometer_core::weather::client::CurrentWeather;
 use barometer_core::weather::detail::{
-    fetch_detail, DailyMetric, DailyPoint, DayDetails, DetailForecast, HourlyMetric, HourlyPoint,
-    LocalTime,
+    DailyMetric, DailyPoint, DayDetails, DetailForecast, HourlyMetric, HourlyPoint, LocalTime,
 };
 use barometer_core::weather::models::{Location, WeatherUnits};
 use barometer_core::ModuleId;
@@ -45,7 +44,7 @@ use self::format::{Unit, DASH};
 use super::cpu::chip_left;
 use self::paint::{Chart, Compass, Gauge, Mark, Moon, Range, SkyCard, SkyMark, SkyValue, Sun};
 use super::ui::{Accent, Builder, Element, Id, Ink, Kind, Style, Tile, TileIcon, CARD_GAP, ICON_BUTTON};
-use super::{Action, Command, Content, Context, Page, Response, Wake};
+use super::{Action, Command, Content, Context, Page, Response};
 use crate::settings_ui::gdi::Align;
 use crate::settings_ui::geometry::Rect;
 use crate::settings_ui::system;
@@ -128,14 +127,19 @@ pub struct Snapshot {
     pub locations: Vec<Location>,
     pub units: WeatherUnits,
     pub current: Option<CurrentWeather>,
+    /// Prefetched by the weather module and shared by the module panel and
+    /// every stack panel, so opening a flyout never starts its own request.
+    pub forecast: Option<DetailForecast>,
+    pub air: Option<AirQuality>,
+    pub forecast_for: Option<String>,
+    pub forecast_units: Option<WeatherUnits>,
+    pub forecast_error: Option<String>,
+    pub forecast_fetching: bool,
     /// Wall-clock time of the strip's last successful current-conditions
     /// fetch, even when the returned values did not change.
     pub refreshed_at_unix: Option<i64>,
     /// Why the strip's last refresh failed, if it did.
     pub error: Option<String>,
-    /// How often the strip refreshes, which is how long a forecast is
-    /// trusted for here too.
-    pub refresh_minutes: u32,
 }
 
 /// Which page the panel is on.
@@ -145,17 +149,6 @@ enum Shown {
     Day(usize),
 }
 
-/// A fetch's answer: which city it is about, the forecast, and the air,
-/// which is asked of a different service and may not answer when the
-/// forecast does.
-///
-/// The city rides along because a fetch in flight cannot be called back. Pick
-/// London while Austin is still being fetched and the answer that arrives is
-/// Austin's; without the city on it, it was accepted and then labeled from
-/// whatever the panel was showing by then, so Austin's ten days, chart,
-/// sunrise and moon appeared under London's name.
-type FetchResult = Option<(u64, String, Result<DetailForecast, String>, Option<AirQuality>)>;
-
 pub struct WeatherContent {
     feed: Arc<Mutex<Snapshot>>,
     snapshot: Snapshot,
@@ -164,16 +157,8 @@ pub struct WeatherContent {
     forecast: Option<DetailForecast>,
     /// The air at the same place, when the air-quality service answered.
     air: Option<AirQuality>,
-    /// The id of the location the forecast is for.
-    forecast_for: Option<String>,
-    fetched_at_unix: Option<i64>,
     fetch_error: Option<String>,
     fetching: bool,
-    /// Counts fetches, so a slow answer to an old request cannot replace a
-    /// newer one.
-    generation: u64,
-    results: Arc<Mutex<FetchResult>>,
-    wake: Option<Wake>,
     shown: Shown,
     selected_hour: Option<usize>,
     /// The minute the page was last laid out in, so the "Updated" line can
@@ -190,20 +175,16 @@ impl WeatherContent {
             current_since: None,
             forecast: None,
             air: None,
-            forecast_for: None,
-            fetched_at_unix: None,
             fetch_error: None,
             fetching: false,
-            generation: 0,
-            results: Arc::new(Mutex::new(None)),
-            wake: None,
             shown: Shown::Overview,
             selected_hour: None,
             built_minute: None,
         }
     }
 
-    /// Takes the feed's latest, noting when the reading itself changed.
+    /// Takes the feed's latest, including the detailed forecast the weather
+    /// worker prefetched before any flyout was opened.
     fn sync_snapshot(&mut self) -> bool {
         let Some(latest) = self.feed.lock().ok().map(|slot| slot.clone()) else {
             return false;
@@ -218,83 +199,19 @@ impl WeatherContent {
             // timestamp. Production snapshots carry one after every success.
             self.current_since = Some(clock::unix_now());
         }
+        let showing = latest.location.as_ref().map(|location| location.id.as_str());
+        if latest.forecast_for.as_deref() == showing && latest.forecast_units == Some(latest.units) {
+            self.forecast = latest.forecast.clone();
+            self.air = latest.air.clone();
+        } else {
+            // A result from a request overtaken by a location change never
+            // appears under the new city's name.
+            self.forecast = None;
+            self.air = None;
+        }
+        self.fetch_error = latest.forecast_error.clone();
+        self.fetching = latest.forecast_fetching;
         self.snapshot = latest;
-        true
-    }
-
-    /// Whether the forecast held is for somewhere else, or older than the
-    /// strip's own refresh interval.
-    fn stale(&self) -> bool {
-        let Some(location) = self.snapshot.location.as_ref() else {
-            return false;
-        };
-        if self.forecast_for.as_deref() != Some(location.id.as_str()) {
-            return true;
-        }
-        let seconds = i64::from(self.snapshot.refresh_minutes.clamp(5, 60)) * 60;
-        let now = clock::unix_now();
-        self.fetched_at_unix.is_none_or(|at| at > now || now - at > seconds)
-    }
-
-    /// Starts a fetch if one is wanted and none is running.
-    fn maybe_fetch(&mut self, force: bool) {
-        let Some(location) = self.snapshot.location.clone() else {
-            return;
-        };
-        if self.fetching || !(force || self.forecast.is_none() || self.stale()) {
-            return;
-        }
-        self.generation += 1;
-        self.fetching = true;
-        self.fetch_error = None;
-        let generation = self.generation;
-        let units = self.snapshot.units;
-        let results = Arc::clone(&self.results);
-        let wake = self.wake.clone();
-        thread::spawn(move || {
-            let outcome = fetch_detail(&location, units).map_err(|why| why.to_string());
-            // The air is a second question to a second service; a forecast
-            // without it is still a forecast.
-            let air = fetch_air(&location).ok().filter(|air| !air.is_empty());
-            if let Ok(mut slot) = results.lock() {
-                *slot = Some((generation, location.id.clone(), outcome, air));
-            }
-            if let Some(wake) = wake {
-                wake.notify();
-            }
-        });
-    }
-
-    /// Collects a finished fetch, if one is waiting.
-    fn take_result(&mut self) -> bool {
-        let Some((generation, about, outcome, air)) =
-            self.results.lock().ok().and_then(|mut slot| slot.take())
-        else {
-            return false;
-        };
-        if generation != self.generation {
-            return false;
-        }
-        self.fetching = false;
-        // The city moved while this was in flight. Nothing here describes the
-        // city on screen, so none of it is kept, and the fetch the change
-        // could not start - `maybe_fetch` refuses while one is running - is
-        // started now.
-        let showing = self.snapshot.location.as_ref().map(|location| location.id.clone());
-        if showing.as_deref() != Some(about.as_str()) {
-            self.maybe_fetch(false);
-            return true;
-        }
-        match outcome {
-            Ok(forecast) => {
-                self.forecast = Some(forecast);
-                self.air = air;
-                self.forecast_for = showing;
-                self.fetched_at_unix = Some(clock::unix_now());
-                self.fetch_error = None;
-            }
-            Err(why) => self.fetch_error = Some(why),
-        }
         true
     }
 }
@@ -304,26 +221,16 @@ impl Content for WeatherContent {
         ModuleId::Weather
     }
 
-    fn attach(&mut self, wake: Wake) {
-        self.wake = Some(wake);
-    }
-
     fn opened(&mut self) {
         self.sync_snapshot();
         self.shown = Shown::Overview;
         self.selected_hour = None;
-        self.maybe_fetch(false);
     }
 
     fn tick(&mut self) -> bool {
         let changed = self.sync_snapshot();
-        let arrived = self.take_result();
-        if changed {
-            // A location the user just changed wants its own forecast.
-            self.maybe_fetch(false);
-        }
         let minute = clock::unix_now() / 60;
-        changed || arrived || self.built_minute != Some(minute)
+        changed || self.built_minute != Some(minute)
     }
 
     fn actions(&self) -> Vec<Action> {
@@ -351,8 +258,8 @@ impl Content for WeatherContent {
                 Response::Relayout
             }
             Id::Custom(ID_REFRESH) => {
-                self.maybe_fetch(true);
-                // The strip's own reading is the module's to refresh.
+                // The weather module refreshes current conditions, the
+                // detailed forecast and air quality on its background worker.
                 Response::Request(Command::Refresh(ModuleId::Weather))
             }
             id if location_index(id).is_some() => {
@@ -1338,9 +1245,14 @@ mod tests {
                 weather_code: Some(2),
                 is_day: true,
             }),
+            forecast: None,
+            air: None,
+            forecast_for: None,
+            forecast_units: None,
+            forecast_error: None,
+            forecast_fetching: false,
             refreshed_at_unix: Some(now() - 5 * 60),
             error: None,
-            refresh_minutes: 15,
         }
     }
 
@@ -1694,16 +1606,40 @@ mod tests {
     }
 
     #[test]
-    fn the_forecast_is_stale_for_another_place_and_after_the_refresh_interval() {
-        let mut content = content(snapshot(), Some(forecast()));
-        content.forecast_for = Some("austin".into());
-        content.fetched_at_unix = Some(clock::unix_now());
-        assert!(!content.stale());
-        content.forecast_for = Some("elsewhere".into());
-        assert!(content.stale());
-        content.forecast_for = Some("austin".into());
-        content.fetched_at_unix = Some(clock::unix_now() - 16 * 60);
-        assert!(content.stale());
+    fn a_prefetched_forecast_is_ready_on_the_first_open() {
+        let mut ready = snapshot();
+        ready.forecast = Some(forecast());
+        ready.forecast_for = Some("austin".into());
+        ready.forecast_units = Some(ready.units);
+        let mut content = WeatherContent::new(Arc::new(Mutex::new(ready)));
+        content.opened();
+        assert!(content.forecast.is_some());
+        assert!(!content.fetching);
+        let words = texts(&build(&mut content).elements);
+        assert!(words.contains(&"10-day forecast".to_string()));
+        assert!(!words.contains(&"Fetching the forecast".to_string()));
+    }
+
+    #[test]
+    fn a_prefetched_forecast_for_another_city_is_not_shown() {
+        let mut wrong = snapshot();
+        wrong.forecast = Some(forecast());
+        wrong.forecast_for = Some("london".into());
+        wrong.forecast_units = Some(wrong.units);
+        let mut content = WeatherContent::new(Arc::new(Mutex::new(wrong)));
+        content.opened();
+        assert!(content.forecast.is_none());
+    }
+
+    #[test]
+    fn a_prefetched_forecast_in_old_units_is_not_shown() {
+        let mut wrong = snapshot();
+        wrong.forecast = Some(forecast());
+        wrong.forecast_for = Some("austin".into());
+        wrong.forecast_units = Some(WeatherUnits::METRIC);
+        let mut content = WeatherContent::new(Arc::new(Mutex::new(wrong)));
+        content.opened();
+        assert!(content.forecast.is_none());
     }
 
     #[test]
@@ -1716,36 +1652,13 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_answer_to_an_old_request_is_thrown_away() {
-        let mut content = content(snapshot(), None);
-        content.generation = 3;
-        *content.results.lock().unwrap() = Some((2, "austin".into(), Ok(forecast()), None));
-        assert!(!content.take_result());
-        assert!(content.forecast.is_none());
-        *content.results.lock().unwrap() =
-            Some((3, "austin".into(), Err("no route".into()), None));
-        assert!(content.take_result());
-        assert_eq!(content.fetch_error.as_deref(), Some("no route"));
+    fn manual_refresh_waits_for_the_workers_state_instead_of_latching_locally() {
+        let mut content = content(snapshot(), Some(forecast()));
+        assert_eq!(
+            content.activate(Id::Custom(ID_REFRESH)),
+            Response::Request(Command::Refresh(ModuleId::Weather))
+        );
         assert!(!content.fetching);
-    }
-
-    #[test]
-    fn a_forecast_that_arrives_for_the_city_you_just_left_is_never_shown_under_the_new_one() {
-        // A fetch in flight cannot be called back, and picking another city
-        // while one is running does not start a second - so the answer that
-        // came back was accepted and then labeled from whatever the panel had
-        // moved on to. Ten days of Austin weather under London's name.
-        let mut content = content(snapshot(), None);
-        content.generation = 1;
-        content.fetching = true;
-        *content.results.lock().unwrap() =
-            Some((1, "london".into(), Ok(forecast()), None));
-        assert!(content.take_result());
-        assert!(content.forecast.is_none(), "another city's forecast was kept");
-        assert_eq!(content.forecast_for, None);
-        // And the panel does not sit there empty: the fetch the change could
-        // not start, because one was already running, is started now.
-        assert!(content.fetching, "no fetch for the city actually on screen");
     }
 
     #[test]

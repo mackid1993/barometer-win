@@ -203,9 +203,22 @@ pub fn parse_search(body: &str) -> Result<Vec<Location>, WeatherError> {
 /// anonymous requests with a 403. The user agent is not optional for the same
 /// reason.
 pub fn locate_by_ip() -> Result<Location, WeatherError> {
+    locate_by_ip_while(|| true)
+}
+
+/// The same lookup with a cancellation boundary between providers. A worker
+/// whose demand or settings changed while ipapi.co was in flight must not
+/// start a fresh request to ipwho.is afterward.
+pub fn locate_by_ip_while(mut still_wanted: impl FnMut() -> bool) -> Result<Location, WeatherError> {
+    if !still_wanted() {
+        return Err(WeatherError::NoLocation);
+    }
     match net::get("ipapi.co", "/json/").ok().and_then(|body| parse_ipapi(&body).ok()) {
         Some(location) => Ok(location),
         None => {
+            if !still_wanted() {
+                return Err(WeatherError::NoLocation);
+            }
             let body = net::get("ipwho.is", "/")?;
             parse_ipwho(&body)
         }
@@ -385,5 +398,10 @@ mod tests {
     fn a_refused_geolocation_is_an_error_not_a_location_at_the_null_island() {
         assert!(parse_ipwho(r#"{"success":false,"message":"rate limited"}"#).is_err());
         assert!(parse_ipapi(r#"{"city":"Austin"}"#).is_err());
+    }
+
+    #[test]
+    fn a_cancelled_geolocation_starts_no_provider_request() {
+        assert!(matches!(locate_by_ip_while(|| false), Err(WeatherError::NoLocation)));
     }
 }

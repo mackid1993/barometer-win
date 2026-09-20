@@ -505,8 +505,13 @@ fn main() {
         Box::new(WeatherModule::new(Default::default())),
     ];
     if console_mode {
-        if let Some(weather) = modules.iter_mut().find(|module| module.id() == barometer_core::ModuleId::Weather) {
-            weather.shown(true);
+        for module in modules.iter_mut() {
+            if matches!(
+                module.id(),
+                barometer_core::ModuleId::Weather | barometer_core::ModuleId::Sensors
+            ) {
+                module.shown(true);
+            }
         }
     }
 
@@ -859,18 +864,17 @@ The file it could not read has been kept, at:
         barometer_app::flyout::Feed<barometer_app::flyout::stack::StackSnapshot>,
     > = std::collections::HashMap::new();
     // The panels' running state: histories and rate windows accumulate
-    // here, and a clone is published each tick.
-    // Deques, and copied out only when somebody is looking - see
-    // `cpu::remember` for the first half of that and `panels_open` for the
-    // second. Between them a day of uptime with every panel closed costs
+    // here, and copied out only when the open panel's detail demand needs it -
+    // see `cpu::remember` and `DetailDemand`. Between them a day of uptime
     // nothing per tick where it used to cost several megabytes of copying.
     let mut cpu_history: VecDeque<cpu::Sample> = VecDeque::new();
     let mut gpu_history: VecDeque<cpu::Sample> = VecDeque::new();
     let mut memory_history: VecDeque<cpu::Sample> = VecDeque::new();
-    // Whether a panel was open on the previous pass, so that opening one can
-    // pull the next sample forward rather than leaving the graph blank for
-    // the rest of the second.
-    let mut panels_were_open = false;
+    // Collector demand on the previous sample. Closing one kind of panel must
+    // retire only the baselines that kind owns; a Weather panel, for example,
+    // has no reason to keep process or extended TCP accounting alive.
+    let mut processes_were_needed = false;
+    let mut network_was_needed = false;
     let mut disks_snapshot = disks::DisksSnapshot::default();
     let mut network_snapshot = network::NetworkSnapshot::default();
     let mut sensors_snapshot = sensor_panel::SensorsSnapshot::default();
@@ -1038,11 +1042,16 @@ The file it could not read has been kept, at:
             // forward to fall due one interval from now - so the panel has a
             // difference over about a second, instead of over the two each
             // walk otherwise waits out before it even starts.
-            process_sample = processes.sample();
-            processes_at = Instant::now() - (WALK_EVERY - INTERVAL);
-            let _ = traffic.sample();
-            traffic_at = Instant::now() - (WALK_EVERY - INTERVAL);
-            traffic_measured = false;
+            let detail = flyout.detail_demand();
+            if detail.processes() {
+                process_sample = processes.sample();
+                processes_at = Instant::now() - (WALK_EVERY - INTERVAL);
+            }
+            if detail.network {
+                let _ = traffic.sample();
+                traffic_at = Instant::now() - (WALK_EVERY - INTERVAL);
+                traffic_measured = false;
+            }
             if trace::on() {
                 trace::line("panel opened: sampling now");
             }
@@ -1177,46 +1186,40 @@ The file it could not read has been kept, at:
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
-                // Every two seconds, and only while a panel that shows
-                // processes could be looking - the walk is the most expensive
-                // thing this loop does.
-                if flyout.is_open() && processes_at.elapsed() >= WALK_EVERY {
+                // Asked once and reused by every detail builder below. A stack
+                // can switch tabs internally, so its demand is deliberately
+                // broad; an ordinary module panel enables only what it shows.
+                let detail = flyout.detail_demand();
+                let processes_needed = detail.processes();
+                let network_needed = detail.network;
+                if processes_needed && processes_at.elapsed() >= WALK_EVERY {
                     processes_at = Instant::now();
                     process_sample = processes.sample();
                 }
-                // Asked once and reused: it decides whether several of the
-                // panels' more expensive fields are worth building at all.
-                let panels_open = flyout.is_open();
                 // How far back the panel that is showing actually reaches.
                 // Zero for the panels that draw no timeline, which is five of
                 // the seven, and five minutes for a processor panel nobody has
                 // moved the picker on - against the day the strip keeps.
                 let history_span = flyout.history_span();
-                if panels_were_open && !panels_open {
-                    // The last panel has closed. The per-process figures are
-                    // gathered by asking the kernel to keep extended
-                    // statistics on every established connection on the
-                    // machine, and that stays on for the life of each
-                    // connection unless it is switched off - so a browser's
-                    // several hundred sockets would go on being accounted for
-                    // long after the panel that wanted them was gone.
-                    barometer_core::netinfo::stop_collecting();
-                    // The baselines go with the accounting. Both samplers
-                    // difference against their previous read, and once the
-                    // panel is down that read is however long ago it was
-                    // last up - so a reopen would divide a whole afternoon's
-                    // bytes by that afternoon, and hand every process the
-                    // share of the machine it averaged over it. Both are
-                    // plausible-looking numbers and neither is a reading of
-                    // now, which is the worse failure of the two.
+                if processes_were_needed && !processes_needed {
+                    // Both CPU shares and process names are differences over
+                    // the previous walk. A later reopen must start from a new
+                    // baseline rather than average the whole closed interval.
                     processes = barometer_core::sys::processes::Sampler::new();
                     process_sample = None;
+                }
+                if network_was_needed && !network_needed {
+                    // Extended TCP accounting otherwise remains enabled for the
+                    // lifetime of every connection after the Network panel is
+                    // gone.
+                    barometer_core::netinfo::stop_collecting();
                     traffic = barometer_core::netinfo::TrafficSampler::new();
                     traffic_rates = Vec::new();
                     traffic_measured = false;
                 }
-                panels_were_open = panels_open;
-                let summary = if flyout.is_open() {
+                processes_were_needed = processes_needed;
+                network_was_needed = network_needed;
+                let summary = if detail.summary() {
                     barometer_core::sys::processes::summary()
                 } else {
                     None
@@ -1230,9 +1233,14 @@ The file it could not read has been kept, at:
                                     locations: settings.weather.locations.clone(),
                                     units: observed.units,
                                     current: observed.current,
+                                    forecast: observed.forecast,
+                                    air: observed.air,
+                                    forecast_for: observed.forecast_for,
+                                    forecast_units: observed.forecast_units,
+                                    forecast_error: observed.forecast_error,
+                                    forecast_fetching: observed.forecast_fetching,
                                     refreshed_at_unix: observed.refreshed_at_unix,
                                     error: observed.error,
-                                    refresh_minutes: observed.refresh_minutes,
                                 });
                             }
                         }
@@ -1243,6 +1251,7 @@ The file it could not read has been kept, at:
                             }
                             let cores = process_sample
                                 .as_ref()
+                                .filter(|_| detail.cpu)
                                 .map(|s| {
                                     s.cores
                                         .iter()
@@ -1257,6 +1266,7 @@ The file it could not read has been kept, at:
                                 .unwrap_or_default();
                             let top: Vec<cpu::ProcessLoad> = process_sample
                                 .as_ref()
+                                .filter(|_| detail.cpu)
                                 .map(|s| {
                                     s.top_by_cpu(12)
                                         .into_iter()
@@ -1276,7 +1286,7 @@ The file it could not read has been kept, at:
                             // reading of an empty list: once there is an
                             // interval, every process has a share, zero
                             // included.
-                            let measuring = panels_open && top.is_empty();
+                            let measuring = detail.cpu && top.is_empty();
                             let split = module.cpu_split();
                             cpu_feed.publish(cpu::CpuSnapshot {
                                 total,
@@ -1313,7 +1323,7 @@ The file it could not read has been kept, at:
                                 history: cpu::newest_span(&gpu_history, history_span),
                                 ..Default::default()
                             };
-                            if flyout.is_open() {
+                            if detail.gpu {
                                 snapshot.engines = module
                                     .gpu_engines()
                                     .into_iter()
@@ -1340,7 +1350,7 @@ The file it could not read has been kept, at:
                                 snapshot.in_use = Some(used);
                                 snapshot.available = Some(total.saturating_sub(used));
                             }
-                            if flyout.is_open() {
+                            if detail.memory {
                                 if let Some(lists) = barometer_core::sys::processes::memory_lists() {
                                     snapshot.with_lists(lists);
                                 }
@@ -1357,6 +1367,7 @@ The file it could not read has been kept, at:
                             }
                             snapshot.top = process_sample
                                 .as_ref()
+                                .filter(|_| detail.memory)
                                 .map(|s| {
                                     s.top_by_memory(12)
                                         .into_iter()
@@ -1376,7 +1387,7 @@ The file it could not read has been kept, at:
                         }
                         barometer_core::ModuleId::Disks => {
                             disks_snapshot.observe(module.rates());
-                            if flyout.is_open() {
+                            if detail.disks {
                                 // Whatever the module's own scan last saw,
                                 // rather than asking again here. Asking here
                                 // meant this thread - the one that paints and
@@ -1419,7 +1430,7 @@ The file it could not read has been kept, at:
                             network_snapshot.unit = settings.network_unit;
                             network_snapshot.upload_first = settings.network_upload_first;
                             network_snapshot.observe(module.rates());
-                            if flyout.is_open() {
+                            if detail.network {
                                 if connection_at.elapsed() >= Duration::from_secs(5) {
                                     connection_at = Instant::now();
                                     let found = barometer_core::netinfo::connection();
@@ -1525,8 +1536,10 @@ The file it could not read has been kept, at:
                                 settings.sensors.decimal_places as usize,
                             );
                             let error = module.sensor_error();
-                            sensors_snapshot.observe(&module.sensors(), error.as_ref());
-                            sensors_feed.publish(sensors_snapshot.clone());
+                            sensors_snapshot.observe_owned(module.sensors(), error);
+                            if detail.sensor_panel {
+                                sensors_feed.publish(sensors_snapshot.clone());
+                            }
                         }
                     }
                 }
@@ -1593,10 +1606,14 @@ The file it could not read has been kept, at:
             // pulls the next sample forward, so the preview is still current
             // the moment the window comes back.
             let for_settings = settings_window.as_ref().is_some_and(|open| open.is_visible());
+            let open_item = flyout.open_item();
+            let detail = barometer_app::flyout::DetailDemand::for_item(open_item);
+            let stack_panel_open =
+                matches!(open_item, Some(barometer_core::stack::StripItem::Stack(_)));
+            let enabled_stack_sensors = settings.stacks.enabled_needs_the_sensor_list();
             // The sensor list is the largest thing a tick clones, and most
             // ticks have nobody to hand it to.
-            let with_sensors =
-                for_settings || flyout.is_open() || settings.stacks.needs_the_sensor_list();
+            let with_sensors = for_settings || detail.sensors || enabled_stack_sensors;
             // And the reading behind it is the most expensive thing Barometer
             // does: one pass of the helper walks every device on the machine.
             // A stack's panel counts whether or not the reading showing is a
@@ -1604,14 +1621,8 @@ The file it could not read has been kept, at:
             // it and a tab that had to wait for a reading would be the one
             // thing this must not cost.
             let demand = barometer_core::modules::SensorDemand {
-                on_the_strip: wants_temperatures(&settings)
-                    || settings.stacks.needs_the_sensor_list(),
-                panel_open: matches!(
-                    flyout.open_item(),
-                    Some(barometer_core::stack::StripItem::Module(
-                        barometer_core::ModuleId::Sensors | barometer_core::ModuleId::Gpu
-                    )) | Some(barometer_core::stack::StripItem::Stack(_))
-                ),
+                on_the_strip: wants_temperatures(&settings) || enabled_stack_sensors,
+                panel_open: detail.sensors,
                 settings_visible: for_settings,
             };
             if let Some(module) = modules
@@ -1656,7 +1667,7 @@ The file it could not read has been kept, at:
                     // panel is the only thing that draws these, and the
                     // opening of one pulls the next tick forward - the same
                     // wake every other panel-only field here relies on.
-                    sensors: match flyout.is_open() {
+                    sensors: match stack_panel_open {
                         true => live.sensors.clone(),
                         false => Vec::new(),
                     },
@@ -2205,6 +2216,10 @@ fn apply_to_modules(modules: &mut [Box<dyn Module>], settings: &barometer_core::
         module.configure(settings);
         if module.id() == barometer_core::ModuleId::Weather {
             module.shown(wants_module(settings, barometer_core::ModuleId::Weather));
+        } else if module.id() == barometer_core::ModuleId::Sensors {
+            module.shown(
+                wants_temperatures(settings) || settings.stacks.enabled_needs_the_sensor_list(),
+            );
         }
     }
 }

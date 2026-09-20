@@ -772,8 +772,6 @@ fn processes_text(s: &CpuSnapshot) -> String {
 /// A process row, the network panel's height, so the three panels that
 /// list processes list them alike.
 pub const PROCESS_ROW_H: f32 = 36.0;
-/// The share bar under the name goes no wider than this, as ProcessRow's.
-const PROCESS_BAR_W: f32 = 120.0;
 
 /// The Mac's 16-point application icon, and the gap after it.
 pub(super) const PROCESS_MARK: f32 = 16.0;
@@ -816,7 +814,10 @@ pub(super) fn process_name_and_share(
     // A 20 line and the bar with 4 between them, centered in the row.
     let top = row.y + (row.h - (20.0 + 4.0 + BAR_H)) / 2.0;
     b.text(Rect::new(x, top, name_w, 20.0), name, Style::Body, Ink::Primary, Align::Left);
-    let bar = Rect::new(x, top + 20.0 + 4.0, name_w.min(PROCESS_BAR_W), BAR_H);
+    // Fill the row up to the value column. The old fixed cap left most of a
+    // wide CPU or Memory card empty and made the share unnecessarily hard to
+    // compare between rows.
+    let bar = Rect::new(x, top + 20.0 + 4.0, name_w, BAR_H);
     share_bar(b, bar, fraction, accent, false);
 }
 
@@ -1169,6 +1170,28 @@ mod tests {
             .filter(|e| matches!(e.kind, Kind::Glyph { glyph, .. } if glyph == glyph::CANCEL))
             .count();
         assert_eq!(glyphs, 0);
+    }
+
+    #[test]
+    fn a_process_share_bar_uses_all_the_room_before_the_value() {
+        let mut builder = Builder::new(0.0, 0.0, 300.0, &measure);
+        let row = Rect::new(0.0, 0.0, 280.0, PROCESS_ROW_H);
+        let value_left = 240.0;
+        process_name_and_share(
+            &mut builder,
+            row,
+            "A process",
+            0.5,
+            value_left,
+            Accent::signature(ModuleId::Cpu),
+            None,
+        );
+        let track = builder
+            .elements
+            .iter()
+            .find(|element| matches!(element.kind, Kind::Track))
+            .expect("process share track");
+        assert!((track.rect.right() - value_left).abs() < 1e-3);
     }
 
     #[test]

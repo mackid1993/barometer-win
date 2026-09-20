@@ -98,7 +98,7 @@ const TICK_MS: u32 = 5_000;
 const OPEN: Duration = Duration::from_millis(150);
 const CLOSE: Duration = Duration::from_millis(100);
 const SLIDE_DIP: f32 = 8.0;
-const SCROLL_STEP: f32 = 48.0;
+const SCROLL_STEP: f32 = 24.0;
 
 /// The stretch after pulling `by` further from `current`.
 ///
@@ -148,6 +148,12 @@ const STRETCH_DONE: f32 = 0.35;
 /// About sixty a second, which is as often as there is any point redrawing.
 /// The decay does not depend on this: see `STRETCH_DECAY`.
 const STRETCH_MS: u32 = 16;
+/// Do not relax while wheel/trackpad messages are still arriving. Decaying
+/// between notches made the page move back and forth under sustained input.
+const STRETCH_RELEASE_DELAY_MS: f32 = 64.0;
+fn stretch_can_relax(input_quiet_ms: f32) -> bool {
+    input_quiet_ms >= STRETCH_RELEASE_DELAY_MS
+}
 /// One wheel notch across a sideways-scrolling picture: three hours of the
 /// weather chart, which is one labeled block, so the labels stay put against
 /// the plate's edge as the chart steps along.
@@ -282,6 +288,9 @@ struct Panel {
     /// When the stretch last changed, so the relax is measured against
     /// the clock rather than against however many timer messages arrived.
     stretched_at: Instant,
+    /// Last input that added overscroll, so spring-back waits until the user
+    /// has stopped pushing against the edge.
+    stretch_input_at: Instant,
     /// Where each sideways-scrolling picture has been scrolled to, by its
     /// id, so that a layout rebuilt on a tick or a hover keeps the chart
     /// where the user left it. Forgotten when the panel opens afresh.
@@ -313,6 +322,7 @@ impl Panel {
             stretch: 0.0,
             stretching: false,
             stretched_at: Instant::now(),
+            stretch_input_at: Instant::now(),
             hscroll: Vec::new(),
             drag: None,
             hover: None,
@@ -1179,7 +1189,9 @@ impl Panel {
     fn start_stretch_timer(&mut self) {
         // Re-based on every pull, so a stretch that is being added to does not
         // relax by the time since the *first* pull the moment it is released.
-        self.stretched_at = Instant::now();
+        let now = Instant::now();
+        self.stretched_at = now;
+        self.stretch_input_at = now;
         if self.stretching {
             return;
         }
@@ -1191,6 +1203,12 @@ impl Panel {
 
     /// Lets the page back to where it belongs, by however long it has been.
     fn on_stretch_timer(&mut self) {
+        if !stretch_can_relax(self.stretch_input_at.elapsed().as_secs_f32() * 1000.0) {
+            // Keep the decay clock current during the hold, otherwise the
+            // first release frame would spend the whole delay in one jump.
+            self.stretched_at = Instant::now();
+            return;
+        }
         let elapsed = self.stretched_at.elapsed().as_secs_f32() * 1000.0;
         self.stretched_at = Instant::now();
         self.stretch *= STRETCH_DECAY.powf(elapsed / STRETCH_DECAY_MS);
@@ -1535,6 +1553,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn elastic_release_waits_until_scroll_input_is_quiet() {
+        assert!(!stretch_can_relax(STRETCH_RELEASE_DELAY_MS - 1.0));
+        assert!(stretch_can_relax(STRETCH_RELEASE_DELAY_MS));
+    }
+
     #[test]
     fn the_page_gives_less_the_harder_it_is_pulled_and_never_comes_off() {
         // The first notch past the end should move the page a good way and

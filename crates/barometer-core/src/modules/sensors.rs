@@ -58,12 +58,12 @@ const LONGEST_RETRY: Duration = Duration::from_secs(60);
 /// machine, so asking twice a second for a temperature nobody has put on
 /// the strip is the plain waste; but a helper that has stopped reading is
 /// a pin picker with nothing in it and a Sensors pane that cannot say
-/// whether the source is alive. A minute keeps both honest, keeps the
-/// process warm, and costs a walk an hour instead of eighteen hundred.
+/// whether the source is alive. An hourly heartbeat keeps both honest, keeps
+/// the process warm, and costs one walk an hour instead of eighteen hundred.
 ///
-/// Nothing waits out a minute to see a reading: `SensorsModule::shown`
+/// Nothing waits out the hour to see a reading: `SensorsModule::shown`
 /// wakes the worker the moment something that can show one appears.
-const IDLE_POLL: Duration = Duration::from_secs(60);
+const IDLE_POLL: Duration = Duration::from_secs(60 * 60);
 
 /// What, if anything, could show a reading from the sensor source.
 ///
@@ -178,9 +178,10 @@ impl SensorsModule {
         let stop = Arc::new(AtomicBool::new(false));
 
         let poll = Arc::new(AtomicU32::new(POLL.as_secs() as u32));
-        // True until the strip says otherwise, so a build or a test that
-        // never calls `shown` behaves exactly as it did before.
-        let demand = Arc::new(AtomicBool::new(true));
+        // Nothing is visible until the strip has loaded settings. Starting
+        // true made sign-in perform foreground hardware walks while Barometer
+        // was still waiting for Explorer's taskbar.
+        let demand = Arc::new(AtomicBool::new(false));
         let worker = thread::spawn({
             let shared = Arc::clone(&shared);
             let stop = Arc::clone(&stop);
@@ -551,6 +552,7 @@ mod cadence_tests {
         // cannot say whether the source is alive would be the worse trade.
         assert_eq!(nobody.interval(2), IDLE_POLL);
         assert_eq!(nobody.interval(60), IDLE_POLL);
+        assert_eq!(IDLE_POLL, Duration::from_secs(60 * 60));
 
         // Any one of the three is enough, and each of them is somebody looking.
         for demand in [
@@ -648,7 +650,7 @@ mod supervision_tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let opened_against: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
 
-        let module = {
+        let mut module = {
             let attempts = Arc::clone(&attempts);
             let opened_against = Arc::clone(&opened_against);
             let installed = Arc::clone(&installed);
@@ -668,6 +670,7 @@ mod supervision_tests {
             )
         };
 
+        module.shown(true);
         until("the first attempt with no library", || attempts.load(Ordering::Acquire) >= 1);
         assert!(
             opened_against.lock().unwrap().is_none(),
@@ -704,7 +707,7 @@ mod supervision_tests {
         let installed = Arc::new(Mutex::new(Some(PathBuf::from(r"C:\Fake\LHM"))));
         let opens = Arc::new(AtomicUsize::new(0));
 
-        let module = {
+        let mut module = {
             let closed = Arc::clone(&closed);
             let opens = Arc::clone(&opens);
             let installed = Arc::clone(&installed);
@@ -718,6 +721,7 @@ mod supervision_tests {
             )
         };
 
+        module.shown(true);
         until("the helper to start", || opens.load(Ordering::Acquire) >= 1);
         assert!(!closed.load(Ordering::Acquire));
 
@@ -754,7 +758,7 @@ mod supervision_tests {
         let installed = Arc::new(Mutex::new(Some(PathBuf::from(r"C:\Fake\First"))));
         let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let module = {
+        let mut module = {
             let opened = Arc::clone(&opened);
             let installed = Arc::clone(&installed);
             SensorsModule::supervised(
@@ -767,6 +771,7 @@ mod supervision_tests {
             )
         };
 
+        module.shown(true);
         until("the first helper", || !opened.lock().unwrap().is_empty());
 
         // A running helper has the old library mapped and will hold it open for
@@ -787,7 +792,7 @@ mod supervision_tests {
         let _sequence = library::sequence();
 
         let attempts = Arc::new(AtomicUsize::new(0));
-        let module = {
+        let mut module = {
             let attempts = Arc::clone(&attempts);
             SensorsModule::supervised(
                 Box::new(move |_| {
@@ -798,6 +803,7 @@ mod supervision_tests {
             )
         };
 
+        module.shown(true);
         until("the first attempt", || attempts.load(Ordering::Acquire) >= 1);
         thread::sleep(Duration::from_millis(700));
         // Without the backoff this is a .NET process spawned every POLL,
