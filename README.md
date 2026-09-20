@@ -52,7 +52,6 @@ There is no account, no subscription and no telemetry.
 <p align="center">
   <a href="docs/screenshots/weather.png"><img src="docs/screenshots/weather.png" width="48%" alt="Barometer Weather flyout showing current conditions, hourly weather, and the ten-day forecast"></a>
 </p>
-<p align="center"><sub>Captured from the native Windows UI. Location and process labels were generalized for privacy.</sub></p>
 
 ## What it shows
 
