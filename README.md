@@ -433,7 +433,7 @@ So Barometer orchestrates it rather than reimplementing or redistributing it:
   releases, pinned to the tag, asset name, byte count and SHA-256 that were tested against
   this helper, and unpacked beside Barometer under Program Files. It is never shipped, so no
   MPL redistribution obligation is taken on and the installer stays small. The elevated helper
-  accepts only this managed, ACL-protected directory and rejects portable user-writable copies.
+  accepts only this managed directory under Program Files and rejects portable user-writable copies.
 - [PawnIO](https://pawnio.eu) is the signed kernel driver LibreHardwareMonitor runs its
   hardware modules inside: `IntelMSR`, `AMDFamily17` and `RyzenSMU` for the processor, `LpcIO`
   for the SuperIO chip's fans and voltages, `LpcACPIEC` and `IsaBridgeEC` for embedded

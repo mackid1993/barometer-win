@@ -103,9 +103,10 @@ pub fn set(on: bool) -> bool {
 
 fn set_for(on: bool) -> bool {
     // Never register a highest-privilege task for an executable whose directory
-    // is still writable by the medium-integrity user. The same hardening also
-    // makes upgrades replace a formerly relocatable installation safely.
-    if on && crate::lhm_install::harden_application_directory().is_err() {
+    // is writable by the medium-integrity user - a development checkout, a
+    // relocatable pre-release copy. Under Program Files is the test; nothing
+    // is written to get there, see `lhm_install::is_in_protected_location`.
+    if on && !crate::lhm_install::is_in_protected_location() {
         return false;
     }
     // Resolve the actual process token and require it to be the user whose

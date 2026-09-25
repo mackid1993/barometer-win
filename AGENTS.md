@@ -275,7 +275,7 @@ behind SuperIO over LPC, CPU MSRs, SMBus, and vendor GPU APIs. All ring-0 or ven
 
 LHM already enumerates NVIDIA (NVML), AMD (ADL), Intel GPUs, CPU packages across Intel and
 three AMD families, and the Nuvoton/ITE/Fintek SuperIO chips. Reimplementing that is most
-of what LHM *is*. It is downloaded into Barometer's ACL-protected Program Files directory
+of what LHM *is*. It is downloaded into Barometer's own Program Files directory
 rather than included in the installer, so no MPL redistribution obligation is taken on and
 no 70 MB of .NET library is present for users who do not want sensors.
 

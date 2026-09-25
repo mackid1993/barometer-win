@@ -121,22 +121,27 @@ internal static class LibraryLocator
         return true;
     }
 
-    /// Requires the ACL written by Barometer: protected inheritance, an
-    /// Administrators or SYSTEM owner, and no write-like allow rule for a
-    /// medium-integrity user principal.
+    /// Requires that no medium-integrity user principal holds a write-like
+    /// allow rule on the directory, inherited or not.
+    ///
+    /// Effective rules and nothing more. The default ACL under Program Files
+    /// - Users read and execute, Administrators and SYSTEM full control, all
+    /// of it inherited - is exactly the guarantee wanted, and it is what an
+    /// elevated installer leaves behind without anybody writing an ACL. An
+    /// earlier version demanded a protected, non-inherited ACL with an
+    /// Administrators owner to match one Barometer wrote with icacls; that
+    /// rewrite is gone, and the demand with it, because a reset of the tree's
+    /// ACLs - which the installer itself performed - turned a perfectly safe
+    /// inherited ACL into "no library" until the user pressed Reinstall.
+    /// CREATOR OWNER is not on the list: Program Files carries an inherit-only
+    /// entry for it by default, and only an administrator can create anything
+    /// there for it to apply to.
     private static bool HasSafeAcl(string directory)
     {
         try
         {
             DirectorySecurity security = new DirectoryInfo(directory).GetAccessControl(
-                AccessControlSections.Access | AccessControlSections.Owner);
-            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner)
-                return false;
-            SecurityIdentifier administrators = new(
-                WellKnownSidType.BuiltinAdministratorsSid, null);
-            SecurityIdentifier system = new(WellKnownSidType.LocalSystemSid, null);
-            if (!security.AreAccessRulesProtected ||
-                (!owner.Equals(administrators) && !owner.Equals(system))) return false;
+                AccessControlSections.Access);
 
             SecurityIdentifier? current = WindowsIdentity.GetCurrent().User;
             HashSet<SecurityIdentifier> untrusted = new()
@@ -144,7 +149,6 @@ internal static class LibraryLocator
                 new SecurityIdentifier(WellKnownSidType.WorldSid, null),
                 new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
                 new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null),
             };
             if (current is not null) untrusted.Add(current);
             foreach (FileSystemAccessRule rule in security.GetAccessRules(

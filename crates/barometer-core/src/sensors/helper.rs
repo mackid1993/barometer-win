@@ -151,8 +151,9 @@ impl HelperProvider {
         configure_environment(&mut command, &windows);
         if let Some(directory) = library {
             // `--library` is the helper's only library source. The helper
-            // independently requires Barometer's exact managed directory,
-            // protected ACLs, and no reparse points before loading code.
+            // independently requires Barometer's exact managed directory
+            // under Program Files, an ACL that grants ordinary users no
+            // write, and no reparse points before loading code.
             command.arg("--library").arg(directory);
         }
 

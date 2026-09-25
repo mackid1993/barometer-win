@@ -208,16 +208,22 @@ pub fn download_url() -> String {
 /// returned holds the library and is what the helper wants as `--library`.
 pub fn install(progress: Option<&dyn Fn(Progress)>) -> Result<PathBuf, InstallError> {
     let root = protected_application_directory().ok_or(InstallError::NoInstallLocation)?;
-    harden_tree(&root, "protecting Barometer's installation directory")?;
     install_into(&root, progress)
 }
 
-/// Locks the installed application tree to SYSTEM, Administrators, and
-/// read/execute access for ordinary users before an elevated sign-in task is
-/// registered for it.
-pub fn harden_application_directory() -> Result<(), InstallError> {
-    let root = protected_application_directory().ok_or(InstallError::NoInstallLocation)?;
-    harden_tree(&root, "protecting Barometer's installation directory")
+/// Whether Barometer is installed where an elevated launch of it is safe.
+///
+/// The rule behind it: never register a highest-privilege sign-in task for,
+/// or load a library beside, an executable in a directory the medium-integrity
+/// user can write to. Program Files is that guarantee - Windows grants Users
+/// read and execute there and nothing more - and being under it is the whole
+/// of the check. Nothing here writes an ACL. A previous version rewrote the
+/// tree's ACLs with icacls on every install and startup toggle, which added
+/// nothing Program Files did not already give and broke an installed library
+/// every time it ran: the reset swept the library directory's own ACL into
+/// an inherited one, and the helper of that version refused inherited ACLs.
+pub fn is_in_protected_location() -> bool {
+    protected_application_directory().is_some()
 }
 
 /// Removes the installation, and anything a previous attempt left beside it.
@@ -317,7 +323,9 @@ fn install_into(root: &Path, progress: Option<&dyn Fn(Progress)>) -> Result<Path
     if !directory.join(LIBRARY).is_file() {
         return Err(InstallError::NoLibrary);
     }
-    harden_tree(&directory, "protecting LibreHardwareMonitor")?;
+    // Placed under Program Files by an elevated process, so it already has
+    // the ACL Windows gives everything there: Users read and execute, and
+    // nothing else. That is what the helper checks before loading it.
     Ok(directory)
 }
 
@@ -530,72 +538,6 @@ fn system_tool(name: &str) -> Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&buffer[..length])).join(name))
 }
 
-/// Runs Windows' ACL utility from the trusted system directory.
-fn run_icacls(path: &Path, arguments: &[&str], action: &'static str) -> Result<(), InstallError> {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let icacls = system_tool("icacls.exe").ok_or_else(|| InstallError::Filesystem {
-        action,
-        why: "Windows did not report its system directory".to_string(),
-    })?;
-    let output = Command::new(icacls)
-        .arg(path)
-        .args(arguments)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|why| InstallError::Filesystem { action, why: why.to_string() })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Err(InstallError::Filesystem {
-        action,
-        why: if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("icacls exited with {}", output.status)
-        },
-    })
-}
-
-/// Gives the root explicit protected ACLs, then resets every descendant so it
-/// inherits those ACLs. Applying `(OI)(CI)` grants recursively in one icacls
-/// invocation leaves regular files with an empty DACL: the inheritance flags
-/// describe children of a directory and are not effective access on a file.
-fn protect_access(path: &Path, action: &'static str) -> Result<(), InstallError> {
-    run_icacls(
-        path,
-        &[
-            "/inheritance:r",
-            "/grant:r",
-            "*S-1-5-18:(OI)(CI)F",
-            "*S-1-5-32-544:(OI)(CI)F",
-            "*S-1-5-32-545:(OI)(CI)RX",
-            "/C",
-            "/Q",
-        ],
-        action,
-    )?;
-
-    let has_children = fs::read_dir(path)
-        .map_err(|why| InstallError::Filesystem { action, why: why.to_string() })?
-        .next()
-        .is_some();
-    if has_children {
-        run_icacls(&path.join("*"), &["/reset", "/T", "/C", "/Q"], action)?;
-    }
-    Ok(())
-}
-
-/// Removes user-writable ACL inheritance, grants only the principals needed at
-/// run time, and transfers ownership away from the interactive user.
-fn harden_tree(path: &Path, action: &'static str) -> Result<(), InstallError> {
-    protect_access(path, action)?;
-    run_icacls(path, &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"], action)
-}
-
 fn doing<T>(action: &'static str, result: std::io::Result<T>) -> Result<T, InstallError> {
     result.map_err(|why| InstallError::Filesystem { action, why: why.to_string() })
 }
@@ -684,29 +626,6 @@ mod tests {
             target_in(root),
             Path::new(r"C:\Program Files\Barometer\LibreHardwareMonitor")
         );
-    }
-
-    #[test]
-    fn hardening_keeps_installed_files_readable_by_the_user() {
-        let scratch = Scratch::new("acl");
-        let executable = scratch.path().join("barometer.exe");
-        fs::write(&executable, b"test executable").unwrap();
-
-        protect_access(scratch.path(), "testing installation permissions").unwrap();
-        let readable = fs::read(&executable);
-
-        // Restore inherited temporary-directory permissions before Scratch
-        // removes its tree, even when an assertion below fails.
-        let icacls = system_tool("icacls.exe").unwrap();
-        let _ = Command::new(icacls)
-            .arg(scratch.path())
-            .args(["/reset", "/T", "/C", "/Q"])
-            .status();
-
-        assert_eq!(readable.unwrap(), b"test executable");
-        // The root grants Users only RX. This process may carry an enabled
-        // Administrators SID on developer machines, so a write attempt here
-        // cannot distinguish the Users ACE from the Administrators F ACE.
     }
 
     #[test]
