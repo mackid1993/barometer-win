@@ -163,6 +163,19 @@ pub enum SensorError {
     Malformed(String),
     /// The transport itself failed.
     Transport(String),
+    /// The source answered in good order and reported nothing at all: no
+    /// devices when it opened, or no sensors when it was read.
+    ///
+    /// An error rather than an empty success, because it is how a source
+    /// opened too early looks. LibreHardwareMonitor initializes each hardware
+    /// group once, when it opens, and gives up on any that is not ready
+    /// without saying so - the PawnIO driver, a GPU vendor library, WMI - and
+    /// then reports that hardware as absent for as long as it runs. At sign-in
+    /// the helper opened before Explorer had drawn the taskbar and stayed
+    /// empty until Barometer was relaunched by hand. Treating nothing as a
+    /// failure puts it through the same backoff and respawn as a helper that
+    /// would not start.
+    NoHardware,
 }
 
 impl fmt::Display for SensorError {
@@ -173,6 +186,9 @@ impl fmt::Display for SensorError {
             SensorError::Unauthorized => f.write_str("sensor source refused the request"),
             SensorError::Malformed(why) => write!(f, "unexpected response: {why}"),
             SensorError::Transport(why) => write!(f, "could not reach the sensor source: {why}"),
+            SensorError::NoHardware => {
+                f.write_str("the sensor source found no hardware yet; it will be asked again")
+            }
         }
     }
 }

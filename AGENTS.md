@@ -378,6 +378,18 @@ once by people who want temperatures. One line out, one line back - the parent w
 and gets one JSON object - so nothing samples hardware unless a reading was asked for, and
 the helper is idle the rest of the time.
 
+**It is not opened until something can show a reading, and an empty answer is a failure.**
+Both rules come from one sign-in bug. LibreHardwareMonitor initializes each hardware group
+once, when it opens, and gives up silently on whatever is not ready - the PawnIO device, a GPU
+vendor library, WMI - then reports that hardware as absent for as long as it runs. The
+supervisor used to open the helper on its first pass, which at sign-in is the first second of
+the process: the logon task starts Barometer before Explorer has drawn the taskbar, and the
+helper was a minute old by the time the strip went up. Whatever it had missed stayed missing
+until Barometer was relaunched by hand. So `modules/sensors.rs` opens nothing until `shown`
+says a column, a panel or the settings window wants a reading, and a helper that greets with
+zero devices or answers a read with no sensors is dropped as `SensorError::NoHardware` and
+respawned through the same backoff as one that would not start.
+
 **Fetching it is not built.** Today `build.ps1` stages `barometer-sensors.exe` and the
 installer packages it beside `barometer.exe`, which is where `main.rs::helper_path` looks for
 it; nothing anywhere downloads the helper. What *is* fetched on demand is

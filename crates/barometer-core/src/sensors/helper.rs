@@ -195,12 +195,21 @@ impl HelperProvider {
             _ => return Err(SensorError::Malformed("helper did not report ready".into())),
         }
         let devices = greeting.get("devices").and_then(Value::as_u64).unwrap_or(0);
+        if devices == 0 {
+            // Ran, looked, and saw nothing - which is not a machine with no
+            // hardware, it is a library that opened before the hardware was
+            // ready and will never look again. Refused here so the supervisor
+            // starts a fresh one after its backoff; returning it would keep an
+            // empty helper for the life of the program. The early returns
+            // above drop `job`, which is what ends this helper.
+            return Err(SensorError::NoHardware);
+        }
 
         Ok(HelperProvider { child, stdin, stdout, devices, _job: job })
     }
 
-    /// Devices found when the helper opened. Zero means it ran but saw no
-    /// hardware, which is a different problem from it not running at all.
+    /// Devices found when the helper opened. Never zero: a helper that saw no
+    /// hardware is refused in `spawn` rather than returned.
     pub fn devices(&self) -> u64 {
         self.devices
     }

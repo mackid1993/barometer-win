@@ -180,7 +180,8 @@ impl SensorsModule {
         let poll = Arc::new(AtomicU32::new(POLL.as_secs() as u32));
         // Nothing is visible until the strip has loaded settings. Starting
         // true made sign-in perform foreground hardware walks while Barometer
-        // was still waiting for Explorer's taskbar.
+        // was still waiting for Explorer's taskbar - and the worker does not
+        // open the helper at all until this goes true, see `supervise`.
         let demand = Arc::new(AtomicBool::new(false));
         let worker = thread::spawn({
             let shared = Arc::clone(&shared);
@@ -336,7 +337,17 @@ fn supervise(
             retry_at = Instant::now();
         }
 
-        if provider.is_none() && Instant::now() >= retry_at {
+        // Not opened until something can show a reading. The helper used to
+        // be opened on the worker's first pass, which at sign-in is the first
+        // second of the process - the logon task starts Barometer before
+        // Explorer has drawn the taskbar, and on the author's machine the
+        // helper was a minute old by the time the strip went up. Whatever
+        // LibreHardwareMonitor could not reach in that second - the PawnIO
+        // driver, a GPU vendor library, WMI - it gives up on silently and never
+        // tries again, so the readings stayed missing until Barometer was
+        // relaunched. `shown` wakes the worker the moment demand appears, so
+        // nothing waits out a rest for this.
+        if provider.is_none() && demand.load(Ordering::Acquire) && Instant::now() >= retry_at {
             // `opening` is the claim and the check in one step. Testing
             // `wanted` and then spawning would leave a window for a removal to
             // start deleting between the two.
@@ -359,12 +370,23 @@ fn supervise(
         }
 
         if let Some(helper) = provider.as_mut() {
-            match helper.read() {
+            // An answer with nothing in it is a failure, not a reading. A helper
+            // that opened too early - see `SensorError::NoHardware` - answers
+            // every read in good order with an empty list, and keeping it
+            // would keep that list for the life of the program. A machine
+            // with genuinely nothing to report pays the same minute-apart
+            // respawn a machine with no library does.
+            let answer = match helper.read() {
+                Ok(sensors) if sensors.is_empty() => Err(SensorError::NoHardware),
+                other => other,
+            };
+            match answer {
                 Ok(sensors) => publish(&name, Ok(sensors)),
                 Err(why) => {
                     // The helper died mid-read, which is the shape a crashed
-                    // one takes. Let it go and let the next pass start another
-                    // rather than reading a closed pipe forever.
+                    // one takes, or it is alive and empty. Let it go and let
+                    // the next pass start another rather than reading a
+                    // closed pipe, or an empty one, forever.
                     provider = None;
                     library::closed();
                     publish(&name, Err(why));
@@ -811,6 +833,108 @@ mod supervision_tests {
         // all of them until somebody presses Install.
         let so_far = attempts.load(Ordering::Acquire);
         assert!(so_far <= 2, "spawned the helper {so_far} times in under a second");
+
+        module.shut_down();
+    }
+
+    #[test]
+    fn nothing_is_opened_until_something_can_show_a_reading() {
+        let _sequence = library::sequence();
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let mut module = {
+            let opens = Arc::clone(&opens);
+            SensorsModule::supervised(
+                Box::new(move |_| {
+                    opens.fetch_add(1, Ordering::AcqRel);
+                    Ok(Box::new(FakeHelper { closed: Arc::new(AtomicBool::new(false)) })
+                        as Box<dyn SensorProvider>)
+                }),
+                Box::new(|| Some(PathBuf::from(r"C:\Fake\LHM"))),
+            )
+        };
+
+        // At sign-in this is the minute between the logon task starting
+        // Barometer and Explorer drawing the taskbar. A helper opened then
+        // reported the hardware as it stood then, forever.
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(opens.load(Ordering::Acquire), 0, "opened the helper before anything could show a reading");
+
+        module.shown(true);
+        until("the helper to open once something is shown", || opens.load(Ordering::Acquire) >= 1);
+
+        module.shut_down();
+    }
+
+    #[test]
+    fn a_helper_that_reports_nothing_is_replaced_rather_than_kept() {
+        let _sequence = library::sequence();
+
+        /// Empty on its first read, the way a library opened before its
+        /// driver is: alive, answering, and reporting no hardware.
+        struct EmptyAtFirst {
+            reads: Arc<AtomicUsize>,
+            closed: Arc<AtomicBool>,
+        }
+
+        impl Drop for EmptyAtFirst {
+            fn drop(&mut self) {
+                self.closed.store(true, Ordering::Release);
+            }
+        }
+
+        impl SensorProvider for EmptyAtFirst {
+            fn name(&self) -> &str {
+                "fake"
+            }
+
+            fn read(&mut self) -> Result<Vec<Sensor>, SensorError> {
+                if self.reads.fetch_add(1, Ordering::AcqRel) == 0 {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![Sensor {
+                    id: "/intelcpu/0/temperature/0".into(),
+                    name: "CPU Package".into(),
+                    hardware: "Fake".into(),
+                    kind: SensorKind::Temperature,
+                    value: Some(51.0),
+                }])
+            }
+        }
+
+        let reads = Arc::new(AtomicUsize::new(0));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let first_closed = Arc::new(AtomicBool::new(false));
+        let mut module = {
+            let reads = Arc::clone(&reads);
+            let opens = Arc::clone(&opens);
+            let first_closed = Arc::clone(&first_closed);
+            SensorsModule::supervised(
+                Box::new(move |_| {
+                    let closed = if opens.fetch_add(1, Ordering::AcqRel) == 0 {
+                        Arc::clone(&first_closed)
+                    } else {
+                        Arc::new(AtomicBool::new(false))
+                    };
+                    Ok(Box::new(EmptyAtFirst { reads: Arc::clone(&reads), closed })
+                        as Box<dyn SensorProvider>)
+                }),
+                Box::new(|| Some(PathBuf::from(r"C:\Fake\LHM"))),
+            )
+        };
+
+        module.shown(true);
+        until("the empty helper to be let go", || first_closed.load(Ordering::Acquire));
+        // What the strip and the pane say meanwhile: not a reading of nothing,
+        // a source that has not delivered.
+        assert_eq!(module.sensor_error(), Some(SensorError::NoHardware));
+
+        // The replacement is spawned after the backoff, not in the same pass,
+        // and its readings reach the strip without anybody relaunching.
+        until("a helper with readings to reach the strip", || {
+            module.shared.lock().map(|s| !s.sensors.is_empty()).unwrap_or(false)
+        });
+        assert!(opens.load(Ordering::Acquire) >= 2, "kept the empty helper instead of replacing it");
 
         module.shut_down();
     }

@@ -193,6 +193,11 @@ around it. `sensors::library::hold()` closes it and waits, so
 `lhm_install::{install,uninstall}` can replace files Windows would otherwise
 refuse to delete. Do not go back to a single spawn at startup: installing the
 library then does nothing until the app is restarted, which was a real bug.
+Nor to opening on the worker's first pass: at sign-in that is a minute before
+the taskbar exists, LibreHardwareMonitor never retries a hardware group it
+missed, and the empty helper was kept until a relaunch - also a real bug. The
+helper opens when `shown` says something wants a reading, and an empty greeting
+or read is `SensorError::NoHardware`, which goes through the respawn backoff.
 
 **Two publish channels to the settings window.** `sensors::health` says what the
 sensor source is doing; `SettingsWindow::publish` pushes a `Snapshot` of live

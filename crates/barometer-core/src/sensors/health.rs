@@ -67,9 +67,10 @@ impl Health {
             // Both mean the helper is there and something is wrong with what
             // it said, which is a different sentence from "it is not running"
             // and a different thing for the user to do about it.
-            SensorError::Unauthorized | SensorError::Malformed(_) | SensorError::Transport(_) => {
-                Health::Failed(why.to_string())
-            }
+            SensorError::Unauthorized
+            | SensorError::Malformed(_)
+            | SensorError::Transport(_)
+            | SensorError::NoHardware => Health::Failed(why.to_string()),
         }
     }
 }
@@ -129,5 +130,9 @@ mod tests {
             Health::from_error(&SensorError::Transport("pipe closed".into())),
             Health::Failed(_)
         ));
+        // A helper that saw nothing is a problem the pane reports in words,
+        // not "providing 0 readings" and not "not running": it is running,
+        // and it will be replaced.
+        assert!(matches!(Health::from_error(&SensorError::NoHardware), Health::Failed(_)));
     }
 }
