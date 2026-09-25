@@ -27,7 +27,7 @@
 ; build.ps1 passes whatever Cargo.toml says, so the installer, its filename and
 ; the executable's own version resource cannot drift apart.
 #ifndef AppVersion
-  #define AppVersion   "1.0.0"
+  #define AppVersion   "1.0.1"
 #endif
 #define AppPublisher   "David Brustein"
 

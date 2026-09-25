@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "barometer"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "barometer-app",
  "barometer-core",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "barometer-app"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "barometer-core",
  "serde_json",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "barometer-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde_json",
  "windows-sys",
